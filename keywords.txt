@@ -1,0 +1,34 @@
+# SimpleTelnet keywords for Arduino IDE syntax highlighting
+# Format: KEYWORD\tTOKENTYPE
+
+# Class names
+SimpleTelnet	KEYWORD1
+
+# Methods
+begin	KEYWORD2
+stop	KEYWORD2
+loop	KEYWORD2
+setLineMode	KEYWORD2
+isLineMode	KEYWORD2
+setNewlineChar	KEYWORD2
+connectedCount	KEYWORD2
+isConnected	KEYWORD2
+disconnectClient	KEYWORD2
+clientIP	KEYWORD2
+getIP	KEYWORD2
+getLastAttemptIP	KEYWORD2
+setKeepAliveInterval	KEYWORD2
+getKeepAliveInterval	KEYWORD2
+onConnect	KEYWORD2
+onDisconnect	KEYWORD2
+onReconnect	KEYWORD2
+onConnectionAttempt	KEYWORD2
+onInputReceived	KEYWORD2
+printf	KEYWORD2
+printf_P	KEYWORD2
+
+# Constants / defines
+SIMPLETELNET_LINE_BUF_LEN	LITERAL1
+SIMPLETELNET_IP_LEN	LITERAL1
+SIMPLETELNET_MAX_WRITE_ERRORS	LITERAL1
+SIMPLETELNET_KEEPALIVE_MS	LITERAL1

@@ -1,0 +1,22 @@
+{
+  "name": "SimpleTelnet",
+  "version": "1.0.0",
+  "description": "Multi-client telnet server for ESP8266 and ESP32 with streaming and CLI modes.",
+  "keywords": ["telnet", "ESP8266", "ESP32", "stream", "CLI", "multi-client", "serial"],
+  "authors": [
+    {
+      "name": "Robert van den Breemen",
+      "url": "https://github.com/rvdbreemen"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rvdbreemen/SimpleTelnet"
+  },
+  "license": "MIT",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif8266", "espressif32"],
+  "export": {
+    "include": "src"
+  }
+}
