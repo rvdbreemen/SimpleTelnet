@@ -221,14 +221,20 @@ size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!_clientActive[i]) continue;
     size_t n = _clients[i].write(buf, size);
-    if (n != size) {
+    if (n == 0) {
+      // Total write failure: the TCP stack couldn't accept even one byte.
+      // This is the reliable signal of a dead connection.
       _onWriteError(i);
     } else {
+      // Partial success (n < size) is normal when the TCP send buffer is
+      // temporarily full.  Clear error counter and let the data already
+      // delivered count as a heartbeat.  The keep-alive check detects dead
+      // connections via status() independently of write success.
       _writeErrors[i] = 0;
       anyOk = true;
     }
   }
-  // Return size if at least one client received everything, 0 if all failed.
+  // Return size if at least one client accepted at least one byte.
   return anyOk ? size : 0;
 }
 
@@ -271,13 +277,22 @@ void SimpleTelnet<MAX_CLIENTS>::flush() {
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!_clientActive[i]) continue;
 #if defined(ARDUINO_ARCH_ESP8266)
-    // ESP8266 WiFiClient::flush(timeout_ms) returns bool.
-    // Failure counts as a write error and may evict the client.
-    if (!_clients[i].flush(_keepAliveInterval)) {
-      _onWriteError(i);
-    }
+    // flush(0): non-blocking nudge — tells the TCP stack to send any data
+    // sitting in the send buffer without blocking for ACKs.
+    //
+    // Deliberately ignoring the return value.  ESPTelnet had a no-op flush()
+    // (inherited from Stream), and callers like DebugFlush() invoke this very
+    // frequently.  Treating flush timeouts as write errors caused spurious
+    // disconnects because:
+    //   - TCP delayed ACK (up to 200 ms) makes flush(timeout_ms) return false
+    //     even when the connection is perfectly healthy.
+    //   - DebugFlush() is called after every OT message and from MQTT/sensor
+    //     code, so 3 timeout failures accumulate quickly and evict the client.
+    //
+    // Dead connections are detected reliably by _checkKeepAlive() via
+    // status() == ESTABLISHED, which is the correct mechanism for this.
+    _clients[i].flush(0);
 #else
-    // ESP32: flush() is void — no error detection possible.
     _clients[i].flush();
 #endif
   }
@@ -392,6 +407,12 @@ void SimpleTelnet<MAX_CLIENTS>::_connectClient(uint8_t idx, WiFiClient& c) {
   _connectedCount++;
   _drainClient(idx);                           // flush telnet negotiation
   if (_onConnect) _onConnect(_ip[idx]);
+#if defined(ARDUINO_ARCH_ESP8266)
+  // Non-blocking flush: nudge the TCP stack to send the connect banner
+  // immediately rather than waiting for the next yield().  Without this the
+  // banner may sit in the send buffer for tens of milliseconds.
+  _clients[idx].flush(0);
+#endif
 }
 
 template<uint8_t MAX_CLIENTS>
