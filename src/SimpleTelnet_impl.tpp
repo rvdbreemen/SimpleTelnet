@@ -364,7 +364,20 @@ size_t SimpleTelnet<MAX_CLIENTS>::printf_P(PGM_P fmt, ...) {
 template<uint8_t MAX_CLIENTS>
 void SimpleTelnet<MAX_CLIENTS>::_acceptNewClients() {
   if (!_server.hasClient()) return;
+  // TASK-398: ESP8266 Arduino Core 3.0+ renamed available() -> accept(); the
+  // old method was kept as deprecated. Pre-3.0 cores (2.7.4, 2.6.3, 2.5.2)
+  // have ONLY available(). Pick the right call at compile time so this
+  // library builds on both legacy (2.x) and modern (3.x) cores.
+#if defined(ARDUINO_ESP8266_RELEASE_2_7_4) \
+ || defined(ARDUINO_ESP8266_RELEASE_2_7_3) \
+ || defined(ARDUINO_ESP8266_RELEASE_2_7_2) \
+ || defined(ARDUINO_ESP8266_RELEASE_2_7_1) \
+ || defined(ARDUINO_ESP8266_RELEASE_2_6_3) \
+ || defined(ARDUINO_ESP8266_RELEASE_2_5_2)
+  WiFiClient newClient = _server.available();
+#else
   WiFiClient newClient = _server.accept();
+#endif
   if (!newClient) return;
 
   // Find a free slot first.
