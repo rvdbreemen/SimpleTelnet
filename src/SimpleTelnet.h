@@ -50,6 +50,16 @@
 #ifndef SIMPLETELNET_KEEPALIVE_MS
   #define SIMPLETELNET_KEEPALIVE_MS   1000
 #endif
+// printf()/printf_P() stack buffer size. Output longer than this falls back
+// to malloc+free per call, which fragments the heap on tight-RAM targets
+// (ESP8266). Bumped from the original 64 to 256 because typical application
+// debug lines (OT frame logs, timestamped status messages, heap traces) are
+// commonly 80-150 bytes and were triggering the fallback on every call.
+// Users can override this with a #define before the #include if RAM is
+// severely constrained; the buffer lives on the stack only during the call.
+#ifndef SIMPLETELNET_PRINTF_STACK_LEN
+  #define SIMPLETELNET_PRINTF_STACK_LEN 256
+#endif
 
 // -------------------------------------------------------------------------
 // Callback type — const char*, never String

@@ -305,7 +305,7 @@ template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::printf(const char* fmt, ...) {
   if (!_hasActiveClient()) return 0;
 
-  char loc_buf[64];
+  char loc_buf[SIMPLETELNET_PRINTF_STACK_LEN];
   va_list arg;
   va_start(arg, fmt);
   int len = vsnprintf(loc_buf, sizeof(loc_buf), fmt, arg);
@@ -333,7 +333,7 @@ template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::printf_P(PGM_P fmt, ...) {
   if (!_hasActiveClient()) return 0;
 
-  char loc_buf[64];
+  char loc_buf[SIMPLETELNET_PRINTF_STACK_LEN];
   va_list arg;
   va_start(arg, fmt);
   // vsnprintf_P reads the format string from flash (PROGMEM) on ESP8266.
