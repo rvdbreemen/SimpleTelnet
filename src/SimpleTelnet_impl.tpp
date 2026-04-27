@@ -292,6 +292,9 @@ void SimpleTelnet<MAX_CLIENTS>::flush() {
     // Dead connections are detected reliably by _checkKeepAlive() via
     // status() == ESTABLISHED, which is the correct mechanism for this.
     _clients[i].flush(0);
+#elif defined(ARDUINO_ARCH_ESP32)
+    // ESP32 Core 3.x: NetworkClient::flush() is deprecated. TCP writes are
+    // unbuffered on ESP32 — the data goes out on write(), no send-flush needed.
 #else
     _clients[i].flush();
 #endif
@@ -564,6 +567,9 @@ void SimpleTelnet<MAX_CLIENTS>::_drainClient(uint8_t idx) {
 #if defined(ARDUINO_ARCH_ESP8266)
   // ESP8266: flush(timeout_ms) returns bool — ignore result during drain.
   _clients[idx].flush(_keepAliveInterval);
+#elif defined(ARDUINO_ARCH_ESP32)
+  // ESP32 Core 3.x: NetworkClient::flush() is deprecated. TCP writes on
+  // ESP32 are unbuffered; the read loop below already drains received data.
 #else
   _clients[idx].flush();
 #endif
