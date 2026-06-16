@@ -22,8 +22,9 @@ criteria, tracked in-repo so the history travels with the code.
 - **Status:** TODO
 - **Priority:** P2
 - **Area:** protocol core (`src/SimpleTelnetCore.h`) + both transports
-- **Applies to:** `SimpleTelnet` (sync) and `AsyncSimpleTelnet` (async) — fix
-  belongs in the shared core so both inherit it.
+- **Applies to:** `SimpleTelnet` (sync) and `AsyncSimpleTelnet` (async) — the
+  parser/policy is shared in the core; the transport-specific work is split into
+  **BL-001a** (sync) and **BL-001b** (async).
 
 #### Context / problem
 
@@ -139,6 +140,117 @@ A minimal, RFC-compliant negotiation layer in the core that:
 - [RFC 855 — Telnet Option Specifications](https://www.rfc-editor.org/rfc/rfc855.html)
 - [RFC 857 — Telnet Echo Option](https://datatracker.ietf.org/doc/html/rfc857)
 - [RFC 858 — Telnet Suppress Go Ahead Option](https://datatracker.ietf.org/doc/html/rfc858)
+
+---
+
+### BL-001a — RFC 854 negotiation: synchronous `SimpleTelnet` transport
+
+- **Status:** TODO
+- **Priority:** P2
+- **Area:** `src/SimpleTelnet.h` + `src/SimpleTelnet_impl.tpp` (consumes the
+  core parser/policy from BL-001)
+- **Depends on:** BL-001 (shared core: IAC FSM, refuse policy, `_feed(idx,…)`
+  signature, `virtual _sendToClient(idx,…)`).
+
+#### Why this is its own item
+
+The synchronous library has **two independent read paths**, and the core parser
+must be wired into both — this is the part that does not exist on the async side:
+
+1. **Callback path** — `_processInput()` runs only when `_onInput != nullptr`
+   (`loop()` guards it). It already consumes bytes one at a time
+   (`while (_clients[i].available()) { read(); _feedChar(...); }`,
+   `SimpleTelnet_impl.tpp`). This is the natural place to feed the IAC FSM.
+2. **Pull path** — with no callback, `_processInput()` is never called; bytes
+   stay in the lwIP TCP buffer and the user drains them via the `Stream`
+   `read()` / `peek()` / `available()` overrides, which read **directly** from
+   `_clients[i]`. The core parser never sees these bytes today.
+
+The sync library also has **no per-client RX buffer by design** (it leans on the
+TCP buffer), so we must add negotiation without reintroducing a big buffer.
+
+#### Design (sync-specific)
+
+- **`_sendToClient(idx, buf, len)`** implementation:
+  ```cpp
+  _clients[idx].write(buf, len);
+  #if defined(ARDUINO_ARCH_ESP8266)
+    _clients[idx].flush(0);   // nudge the small 3-byte reply out immediately
+  #endif
+  ```
+  Replies are tiny and sent directly; they must **not** run through
+  `_onWriteError()` (a transient failure here should not evict the client).
+
+- **Per-client FSM state** lives in the core (added in BL-001):
+  `uint8_t _iacState[MAX_CLIENTS]` (+ saved command byte). State persists across
+  `loop()` calls so a sequence split across two TCP reads is handled correctly.
+
+- **Callback / line mode** (primary value): in `_processInput()` replace
+  `_feedChar((char)b)` with `this->_feed(i, &b, 1)` (or `_feedChar(i, (char)b)`).
+  The core strips IAC, sends replies via `_sendToClient(i, …)`, and forwards only
+  NVT data to `_handleLineInput` / `_handleCharInput`. No extra buffer needed —
+  we are already consuming byte-by-byte.
+
+- **Pull / streaming mode** — keep the minimal-RAM ethos; offer two behaviours
+  via `setTelnetNegotiation(mode)`:
+  - `OFF` (default for pure pull/streaming): today's behaviour — bytes incl. IAC
+    pass through `read()` untouched. Streaming/log users send no input, so this
+    costs nothing and keeps zero buffers.
+  - `REFUSE` / `CHAR_ECHO`: route `read()`/`peek()` through the core FSM with a
+    tiny **per-client carry buffer of ≤3 bytes** (only to hold a partial IAC
+    sequence that spans reads — not a data buffer). `read()` returns the next NVT
+    byte (or -1), consuming/answering any IAC in between; `available()` becomes a
+    lower-bound hint (document that it may report bytes that resolve to IAC).
+    This avoids a full RX ring while still stripping/answering on the pull path.
+
+- **Proactive negotiation on connect** (`CHAR_ECHO`): in `_connectClient()`,
+  after `_onConnect`, send `IAC WILL ECHO` + `IAC WILL SGA` via `_sendToClient`.
+
+#### Acceptance criteria (sync)
+
+- Line/CLI mode: `IAC DO <opt>` → exactly `IAC WONT <opt>` on the wire; no
+  command or option byte (incl. printable option codes) reaches the line buffer;
+  `IAC SB … IAC SE` consumed; `IAC IAC` → one `0xFF` data byte.
+- Sequence split across two `loop()` iterations (e.g. `IAC` then `DO ECHO` on the
+  next read) is parsed correctly (persistent per-client state).
+- `negotiation = OFF` reproduces current behaviour on both paths (regression).
+- Negotiation replies never trigger a write-error eviction.
+- Existing examples (`CLIMode`, `StreamingMode`, `DualInstance`) build unchanged;
+  CLI input is clean from PuTTY (telnet mode) and Windows `telnet`.
+
+#### Verification (sync)
+
+- Extend the host harness: a fake `WiFiClient` whose `available()/read()` serve a
+  scripted byte stream incl. IAC sequences and a **boundary case** (sequence
+  split across two `_processInput()` calls); a test subclass capturing
+  `_sendToClient` output. Assert replies + clean surfaced data for both the
+  callback path and the `read()` pull path (`REFUSE`).
+- Manual: `telnet <ip>` and PuTTY telnet mode against `CLIMode`; with
+  `CHAR_ECHO`, confirm character-at-a-time echo.
+
+#### Effort / risk (sync)
+
+- **Effort:** ~S–M once BL-001 lands (mostly wiring + the pull-path carry buffer).
+- **Risk:** low. The only subtlety is the pull-path `available()` semantics —
+  mitigated by keeping `OFF` the default for pure streaming and documenting the
+  lower-bound behaviour.
+
+---
+
+### BL-001b — RFC 854 negotiation: asynchronous `AsyncSimpleTelnet` transport
+
+- **Status:** TODO
+- **Priority:** P3 (after async hardware validation)
+- **Area:** `async/src/AsyncSimpleTelnet.h`
+- **Depends on:** BL-001.
+
+Counterpart of BL-001a for the async transport. Simpler than sync: there is a
+single ingress (`_onData`), so wire the core FSM there (`this->_feed(idx, data,
+len)` already carries `idx`). `_sendToClient(idx,…)` pushes the 3-byte reply into
+`_tx[idx]` and calls `_flushTx(idx)`, under the existing recursive mutex. The
+pull path already uses a per-client RX ring, so no carry buffer is needed — only
+NVT data is pushed into the ring. To be detailed once the async prototype is
+hardware-validated.
 
 ---
 
