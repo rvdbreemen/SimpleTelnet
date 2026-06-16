@@ -142,12 +142,33 @@ Both are selected per instance; they can run side by side (see `DualInstance`).
 
 ## How it compares
 
-**Synchronous peers** (see the table above):
+**Synchronous peers** — the three most popular (see the deep dive in
+[`docs/SYNC_COMPARISON.md`](docs/SYNC_COMPARISON.md)):
 
-- **TelnetStream** (Juraj Andrassy) — great streaming `Stream` server, but a
-  hidden global, no callbacks, broadcast-only multi-client.
 - **ESPTelnet / ESPTelnetStream** (Lennart Hennigs) — excellent callback/event
   model, but single-client and `String`-based (heap per keystroke).
+- **TelnetStream** (Juraj Andrassy) — great streaming `Stream` server, but a
+  hidden global, no callbacks, broadcast-only multi-client.
+- **TelnetSpy** (yasheena) — mirrors `Serial` over telnet; single-client and
+  carries a large (≈3000 B) transmit ring buffer.
+
+**What sets the sync `SimpleTelnet` apart:**
+
+- **On-connect message** — `onConnect(const char* ip)` hands you the client IP so
+  you can print a welcome/banner the moment a client attaches, with no `String`:
+  ```cpp
+  telnet.onConnect([](const char* ip){ telnet.printf("Welcome %s\r\n", ip); });
+  ```
+- **Template-sized clients** — the max number of simultaneous clients is a
+  **compile-time template parameter** (`SimpleTelnet<N>`). All per-client state is
+  allocated statically and sized to exactly what you ask for — no other popular
+  library does this (ESPTelnet/TelnetSpy are single-client; TelnetStream is an
+  unsized broadcast).
+- **Memory minimization as the design goal** — it was born from a heap regression,
+  so: no `String` anywhere (zero heap per keystroke), one *shared* CLI input
+  buffer across all slots, static slots (no `new`, no fragmentation), no hidden
+  global, and tunable buffer sizes. ESPTelnet allocates a `String` per input;
+  TelnetSpy holds a multi-KB ring; SimpleTelnet stays around 489 B (`<1>`).
 
 **Asynchronous peers** — there is **no widely-adopted standalone async telnet
 library**; the popular ones are synchronous, and the async implementations that
@@ -160,8 +181,9 @@ exist are embedded inside firmware projects:
 - **jeremypoulter/WiFiTelnetToSerial** — ESPAsyncTCP telnet↔serial bridge (an
   app, not a packaged library).
 
-A detailed, code-level comparison (functionality + implementation patterns) is in
-[`docs/ASYNC_COMPARISON.md`](docs/ASYNC_COMPARISON.md).
+Detailed, code-level comparisons (functionality + implementation patterns):
+[`docs/SYNC_COMPARISON.md`](docs/SYNC_COMPARISON.md) (sync peers) and
+[`docs/ASYNC_COMPARISON.md`](docs/ASYNC_COMPARISON.md) (async peers).
 
 ---
 
