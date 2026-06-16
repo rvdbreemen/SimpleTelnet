@@ -4,6 +4,13 @@ SimpleTelnet is a multi-client telnet server library for ESP8266 and ESP32. It s
 
 Built for Arduino C++, packaged as a self-contained library, and designed to keep its memory footprint honest.
 
+**Since 2.0, the library ships two transports in one package, both on a shared protocol core:**
+
+- **`SimpleTelnet`** — the **synchronous** transport (`WiFiServer`/`WiFiClient`), driven by `loop()`. Runs on **ESP8266 and ESP32**. `#include <SimpleTelnet.h>`.
+- **`AsyncSimpleTelnet`** — the **event-driven async** transport on **AsyncTCP** (same stack as `AsyncWebServer`), with **no `loop()` polling**. **ESP32 only.** `#include <AsyncSimpleTelnet.h>`.
+
+Both expose the same API — migrating is just swapping the include and the class name. And both are **protocol-aware telnet servers**: they implement RFC 854 option negotiation (see [Telnet protocol (RFC 854) compliance](#telnet-protocol-rfc-854-compliance)), not just a raw byte pipe.
+
 ---
 
 ## Why SimpleTelnet?
@@ -45,8 +52,10 @@ If you don't need multi-client or if you don't need callbacks, go use those libr
 | Multi-client | broadcast only | No | No | Yes (`SimpleTelnet<N>`) |
 | Streaming mode | Yes | No | Yes | Yes |
 | CLI / line-input mode | No | Yes | Yes | Yes |
+| Async / event-driven (AsyncTCP) | No | No | No | Yes (`AsyncSimpleTelnet`, ESP32) |
 | Callbacks | No | Yes | Yes | Yes |
 | Callback type | N/A | `String` | `String` | `const char*` |
+| RFC 854 negotiation | minimal | partial | partial | Yes (parse/strip + refuse + ECHO/SGA) |
 | No hidden globals | No | Yes | Yes | Yes |
 | `printf_P` (PROGMEM) | No | No | No | Yes (ESP8266) |
 | ESP8266 + ESP32 | Yes | Yes | Yes | Yes |
@@ -237,6 +246,56 @@ listed in `depends=`), so sync/ESP8266 users are unaffected. The async header is
 header-only and only pulls in `<AsyncTCP.h>` when you include it — install
 [ESP32Async/AsyncTCP](https://github.com/ESP32Async/AsyncTCP) (PlatformIO:
 add it to `lib_deps`) to use the async variant.
+
+---
+
+## Telnet protocol (RFC 854) compliance
+
+SimpleTelnet is a protocol-aware telnet server, not just a raw TCP pipe. All IAC
+handling lives in the shared core, so the **sync and async variants behave
+identically**. Behaviour is selected with `setTelnetNegotiation(mode)` (default
+`NEG_REFUSE`).
+
+**Implemented (RFC 854 / 855 / 857 / 858, plus RFC 1143 for loop-safe negotiation):**
+
+- **Full IAC command parsing** — the entire command set (`SE, NOP, DM, BRK, IP,
+  AO, AYT, EC, EL, GA, SB, WILL, WONT, DO, DONT, IAC`) is recognised and removed
+  from the data stream, so option bytes never leak into your input (a printable
+  option code can no longer end up in the line buffer).
+- **Option negotiation** — every request is answered: `DO`→`WONT`,
+  `WILL`→`DONT` (refuse), driven by a scoped **RFC 1143 "Q method"** state
+  machine so it never loops.
+- **ECHO (RFC 857) + SUPPRESS-GO-AHEAD (RFC 858)** — in `NEG_CHAR_ECHO` the
+  server proactively negotiates both and echoes input → a true
+  character-at-a-time CLI.
+- **Subnegotiation** — `IAC SB … IAC SE` blocks are skipped safely.
+- **Data transparency** — an incoming `IAC IAC` becomes a single literal
+  `0xFF`; an outgoing `0xFF` data byte is escaped to `IAC IAC`, so binary output
+  stays safe on the wire.
+- **AYT** (Are You There) gets a visible reply; **EC** / **EL** act as
+  backspace / clear-line in CLI mode.
+
+**Intentionally not implemented (and still compliant):**
+
+- The option "zoo" — NAWS, TERMINAL-TYPE, LINEMODE, NEW-ENVIRON, CHARSET,
+  BINARY. We correctly **refuse** these, which RFC 855 permits; they add
+  subnegotiation state for negligible value on a debug/CLI server.
+- **Go-Ahead** signalling and the **Synch / Data-Mark** (TCP urgent) mechanism —
+  obsolete half-duplex concepts no modern client/server uses. We suppress GA via
+  SGA and consume DM harmlessly, which is the standard modern behaviour.
+
+**Modes:**
+
+| Mode | Behaviour |
+|---|---|
+| `NEG_REFUSE` *(default)* | parse + strip IAC, refuse all options, escape output, handle AYT/EC/EL |
+| `NEG_CHAR_ECHO` | as above, **plus** negotiate ECHO/SGA and echo input (interactive CLI) |
+| `NEG_OFF` | legacy raw passthrough — no interpretation (pre-2.0 behaviour) |
+
+> **Note (2.0 default change):** before 2.0, IAC bytes were passed through raw.
+> Since 2.0 the default (`NEG_REFUSE`) strips and answers them, so `read()` and
+> char-mode `onInputReceived` see clean NVT data. Use `NEG_OFF` to restore the
+> old raw behaviour.
 
 ---
 
