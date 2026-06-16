@@ -1,6 +1,6 @@
 {
   "name": "SimpleTelnet",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Multi-client telnet server for ESP8266 and ESP32 with streaming and CLI modes. Ships both a synchronous (WiFiServer) variant and an optional event-driven async variant (AsyncSimpleTelnet, AsyncTCP, ESP32) sharing one protocol core. RFC 854 negotiation.",
   "keywords": ["telnet", "ESP8266", "ESP32", "async", "AsyncTCP", "stream", "CLI", "multi-client", "serial"],
   "authors": [

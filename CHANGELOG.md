@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-16
+
 ### Added
 - **Async variant shipped in the same library.** `AsyncSimpleTelnet`
   (`src/AsyncSimpleTelnet.h`) — event-driven ESP32 transport on AsyncTCP, same
@@ -31,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (sync) and `AsyncSimpleTelnet` (async).
 
 ### Changed
+- **BREAKING (default behaviour change — reason for the 2.0 major bump):**
+  received telnet input is now parsed for RFC 854 IAC sequences by default
+  (`NEG_REFUSE`). Before 2.0, IAC bytes were passed through raw — to char-mode
+  `onInputReceived` and to `read()`/`peek()`. They are now stripped and answered,
+  so handlers/`read()` see clean NVT data. Call `setTelnetNegotiation(NEG_OFF)`
+  to restore the pre-2.0 raw passthrough. The sync transport's method set and
+  signatures are otherwise unchanged.
 - Internal refactor (no public API or behaviour change): the transport-agnostic
   protocol logic — line/CR-LF parsing, mode handling, callbacks, IP formatting
   and `printf`/`printf_P` — moved into a new base class `SimpleTelnetCore`
