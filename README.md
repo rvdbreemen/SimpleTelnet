@@ -177,6 +177,17 @@ Key differences from TelnetStream at a glance:
 - `loop()` must be called from `loop()` for keepalive and callbacks
 - `MAX_CLIENTS` is a template parameter, not a runtime value
 
+### Telnet (RFC 854) negotiation
+
+`setTelnetNegotiation(mode)` controls IAC option negotiation:
+- `NEG_REFUSE` (default) — parse and strip IAC sequences, politely refuse every
+  option (`DO`→`WONT`, `WILL`→`DONT`), skip subnegotiation, honour `IAC IAC`,
+  reply to `AYT`, and treat `EC`/`EL` as backspace / line-clear. Outbound `0xFF`
+  is escaped as `IAC IAC`.
+- `NEG_CHAR_ECHO` — also negotiates `ECHO` + `SUPPRESS-GO-AHEAD` and echoes
+  input, for an interactive character-at-a-time CLI.
+- `NEG_OFF` — legacy raw passthrough (no interpretation).
+
 ---
 
 ## Memory Footprint
@@ -189,6 +200,43 @@ Measured on ESP8266. lwIP socket pools are statically allocated by the network s
 | `SimpleTelnet<4>` | ~1033 B |
 
 No `String` objects are allocated. No heap fragmentation from callbacks. The CLI input buffer is shared across all client slots rather than allocated per slot: `MAX_CLIENTS * SIMPLETELNET_LINE_BUF_LEN` bytes become just `SIMPLETELNET_LINE_BUF_LEN` bytes (128 bytes by default, overridable at compile time).
+
+---
+
+## Architecture
+
+The library ships **two transports in one package**, layered on a shared,
+transport-agnostic protocol core so the parsing logic is never duplicated:
+
+- **`SimpleTelnetCore`** (`src/SimpleTelnetCore.h`) — transport-agnostic base
+  class with all the protocol logic: line/CR-LF parsing, streaming vs CLI mode,
+  callbacks, IP formatting, `printf`/`printf_P` and RFC 854 negotiation. It knows
+  nothing about sockets; the transport feeds received bytes in and output goes
+  out through the virtual Arduino `Stream` `write()`.
+- **`SimpleTelnet`** (`src/SimpleTelnet.h`) — synchronous transport on
+  `WiFiServer`/`WiFiClient[]`, driven by `loop()`. ESP8266 + ESP32.
+  `#include <SimpleTelnet.h>`.
+- **`AsyncSimpleTelnet`** (`src/AsyncSimpleTelnet.h`) — event-driven transport on
+  **AsyncTCP** (same ecosystem as `AsyncWebServer`), no `loop()` polling. ESP32
+  only. `#include <AsyncSimpleTelnet.h>`. **Prototype — not yet hardware-validated.**
+
+Both derive from the same core, so they share one public API: migrate by swapping
+the include + class name (`loop()` becomes a no-op in async). See
+[docs/ASYNC.md](docs/ASYNC.md) and the library comparison in
+[docs/ASYNC_COMPARISON.md](docs/ASYNC_COMPARISON.md).
+
+### Choosing a variant / dependencies
+
+| | include | platforms | extra dependency |
+|---|---|---|---|
+| Synchronous | `SimpleTelnet.h` | ESP8266 + ESP32 | none |
+| Asynchronous | `AsyncSimpleTelnet.h` | ESP32 | **AsyncTCP** (install yourself) |
+
+`AsyncTCP` is intentionally **not** a hard dependency of this library (it is not
+listed in `depends=`), so sync/ESP8266 users are unaffected. The async header is
+header-only and only pulls in `<AsyncTCP.h>` when you include it — install
+[ESP32Async/AsyncTCP](https://github.com/ESP32Async/AsyncTCP) (PlatformIO:
+add it to `lib_deps`) to use the async variant.
 
 ---
 

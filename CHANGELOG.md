@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Async variant shipped in the same library.** `AsyncSimpleTelnet`
+  (`src/AsyncSimpleTelnet.h`) — event-driven ESP32 transport on AsyncTCP, same
+  public API as `SimpleTelnet`, `loop()` is a no-op. Single-repo packaging:
+  `AsyncTCP` is an **optional** dependency (not in `depends=`), only pulled in
+  when you include the async header, so ESP8266 / sync users are unaffected.
+  Docs: `docs/ASYNC.md`, `docs/ASYNC_COMPARISON.md`. Prototype — not yet
+  hardware-validated.
+
+- **Telnet (RFC 854) option negotiation** in the shared core (BL-001/001a/001b).
+  `setTelnetNegotiation(NEG_OFF | NEG_REFUSE | NEG_CHAR_ECHO)`:
+  - `NEG_REFUSE` (default): parse + strip IAC sequences, politely refuse every
+    option (`DO`→`WONT`, `WILL`→`DONT`), skip subnegotiation (`SB…SE`), honour
+    `IAC IAC` as a literal `0xFF`, and reply to `AYT`; `EC`/`EL` act as
+    backspace / line-clear in line mode.
+  - `NEG_CHAR_ECHO`: also negotiates `ECHO` + `SUPPRESS-GO-AHEAD` (scoped
+    RFC 1143 Q method) and echoes input for character-at-a-time terminals.
+  - `NEG_OFF`: legacy raw passthrough (no interpretation).
+  - **Outbound IAC escaping**: a `0xFF` data byte is sent as `IAC IAC`
+    (RFC 854) in negotiation-on modes.
+  Implemented once in `SimpleTelnetCore`, inherited by both `SimpleTelnet`
+  (sync) and `AsyncSimpleTelnet` (async).
+
+### Changed
+- Internal refactor (no public API or behaviour change): the transport-agnostic
+  protocol logic — line/CR-LF parsing, mode handling, callbacks, IP formatting
+  and `printf`/`printf_P` — moved into a new base class `SimpleTelnetCore`
+  (`src/SimpleTelnetCore.h`). `SimpleTelnet` now derives from it and contains
+  only the synchronous `WiFiServer`/`WiFiClient` transport. This lets the
+  parsing/protocol code be shared 1:1 with the planned event-driven async
+  ESP32 fork (`AsyncSimpleTelnet`, built on AsyncTCP) so the two cannot drift.
+
 ## [1.0.0] - 2026-04-12
 
 ### Added
