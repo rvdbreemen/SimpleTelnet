@@ -2,12 +2,13 @@
 
 Event-driven, multi-client telnet server for **ESP32**, built on **AsyncTCP**
 (the same stack as `ESPAsyncWebServer`). It is the asynchronous counterpart of
-[SimpleTelnet](../README.md) and shares the exact same protocol core
-(`SimpleTelnetCore`), so it has the **same public API**.
+[SimpleTelnet](../README.md), shipped in the **same library** (`src/AsyncSimpleTelnet.h`)
+and sharing the exact same protocol core (`SimpleTelnetCore`), so it has the
+**same public API**.
 
 > **Status: prototype.** Host-compiled and unit-tested against API stubs, but
-> **not yet validated on hardware.** Lives in this subfolder for review; the
-> plan is to split it into its own `AsyncSimpleTelnet` repository.
+> **not yet validated on hardware.** It is `#include <AsyncSimpleTelnet.h>` in
+> this library; AsyncTCP is an optional dependency you install yourself.
 
 ## Why
 
@@ -16,8 +17,8 @@ ESP32 as long as you call `telnet.loop()`. AsyncSimpleTelnet removes that
 requirement: connections, data and disconnects arrive as AsyncTCP events, so
 there is **no polling** and writes are non-blocking with backpressure handling.
 
-See [COMPARISON.md](COMPARISON.md) for how this compares to existing ESP32
-telnet libraries (ESPTelnet, robdobsn/AsyncTelnetServer, WiFiTelnetToSerial).
+See [ASYNC_COMPARISON.md](ASYNC_COMPARISON.md) for how this compares to existing
+ESP32 telnet libraries (ESPTelnet, robdobsn/AsyncTelnetServer, WiFiTelnetToSerial).
 
 ## Drop-in migration
 

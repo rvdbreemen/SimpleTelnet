@@ -205,22 +205,38 @@ No `String` objects are allocated. No heap fragmentation from callbacks. The CLI
 
 ## Architecture
 
-The library is split into two layers so the protocol logic stays transport-agnostic:
+The library ships **two transports in one package**, layered on a shared,
+transport-agnostic protocol core so the parsing logic is never duplicated:
 
-- **`SimpleTelnetCore`** (`src/SimpleTelnetCore.h`) — a transport-agnostic base
+- **`SimpleTelnetCore`** (`src/SimpleTelnetCore.h`) — transport-agnostic base
   class with all the protocol logic: line/CR-LF parsing, streaming vs CLI mode,
-  callbacks, IP formatting and `printf`/`printf_P`. It knows nothing about
-  sockets; the transport feeds received bytes in and output goes out through the
-  virtual Arduino `Stream` `write()`.
-- **`SimpleTelnet`** (`src/SimpleTelnet.h`) — the synchronous transport that
-  derives from the core: it owns the `WiFiServer`/`WiFiClient[]` and is driven by
-  `loop()`. This is the default for ESP8266 and ESP32.
+  callbacks, IP formatting, `printf`/`printf_P` and RFC 854 negotiation. It knows
+  nothing about sockets; the transport feeds received bytes in and output goes
+  out through the virtual Arduino `Stream` `write()`.
+- **`SimpleTelnet`** (`src/SimpleTelnet.h`) — synchronous transport on
+  `WiFiServer`/`WiFiClient[]`, driven by `loop()`. ESP8266 + ESP32.
+  `#include <SimpleTelnet.h>`.
+- **`AsyncSimpleTelnet`** (`src/AsyncSimpleTelnet.h`) — event-driven transport on
+  **AsyncTCP** (same ecosystem as `AsyncWebServer`), no `loop()` polling. ESP32
+  only. `#include <AsyncSimpleTelnet.h>`. **Prototype — not yet hardware-validated.**
 
-This separation exists so an **event-driven async ESP32 variant**
-(`AsyncSimpleTelnet`, built on AsyncTCP — same ecosystem as `AsyncWebServer`)
-can reuse the exact same protocol core, keeping the same public API
-(swap the include + class name; `loop()` becomes a no-op) without duplicating —
-and risking drift in — the carefully tuned parsing logic.
+Both derive from the same core, so they share one public API: migrate by swapping
+the include + class name (`loop()` becomes a no-op in async). See
+[docs/ASYNC.md](docs/ASYNC.md) and the library comparison in
+[docs/ASYNC_COMPARISON.md](docs/ASYNC_COMPARISON.md).
+
+### Choosing a variant / dependencies
+
+| | include | platforms | extra dependency |
+|---|---|---|---|
+| Synchronous | `SimpleTelnet.h` | ESP8266 + ESP32 | none |
+| Asynchronous | `AsyncSimpleTelnet.h` | ESP32 | **AsyncTCP** (install yourself) |
+
+`AsyncTCP` is intentionally **not** a hard dependency of this library (it is not
+listed in `depends=`), so sync/ESP8266 users are unaffected. The async header is
+header-only and only pulls in `<AsyncTCP.h>` when you include it — install
+[ESP32Async/AsyncTCP](https://github.com/ESP32Async/AsyncTCP) (PlatformIO:
+add it to `lib_deps`) to use the async variant.
 
 ---
 

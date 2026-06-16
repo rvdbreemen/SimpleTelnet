@@ -12,11 +12,17 @@
  * Everything else stays the same. telnet.loop() still exists as a no-op so
  * existing sketches compile unchanged.
  *
- * The protocol logic (line parsing, modes, callbacks, printf) is shared with
- * the synchronous library via the SimpleTelnetCore base class.
+ * The protocol logic (line parsing, modes, callbacks, printf, RFC 854
+ * negotiation) is shared with the synchronous library via the SimpleTelnetCore
+ * base class — the same file in src/, no vendored copy.
  *
- * !!! PROTOTYPE !!!  This file compiles against the AsyncTCP API but has not
- * yet been validated on hardware. See README in this folder.
+ * Requires the AsyncTCP library (ESP32). It is an OPTIONAL dependency of this
+ * package: only pulled in when you include this header, so ESP8266 / sync-only
+ * users are unaffected. Install ESP32Async/AsyncTCP yourself to use it.
+ *
+ * !!! PROTOTYPE !!!  This compiles against the AsyncTCP API and is unit-tested
+ * at the protocol-core level, but the async transport wiring is not yet
+ * validated on hardware. See docs/ASYNC.md.
  *
  * Copyright (c) 2026 Robert van den Breemen — MIT License
  */

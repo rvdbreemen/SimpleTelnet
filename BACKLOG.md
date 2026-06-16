@@ -303,6 +303,16 @@ hardware-validated.
 
 ## Done
 
+### Repo layout — single-package for sync + async — 2026-06-16
+
+Decision (revised): publish both transports from **one repository / one library**
+instead of forking. `src/` holds the shared `SimpleTelnetCore.h` plus both
+transport headers (`SimpleTelnet.h`, `AsyncSimpleTelnet.h`); examples for both
+live under `examples/`; async docs under `docs/`. No vendored core copy → no
+drift. `AsyncTCP` is an optional dependency (omitted from `depends=`; only pulled
+in when `AsyncSimpleTelnet.h` is included). Trade-off accepted: a single Arduino
+Library Manager entry (async users install AsyncTCP themselves).
+
 ### BL-001 / BL-001a / BL-001b — Telnet (RFC 854) option negotiation — 2026-06-16
 
 Implemented the MUST + SHOULD tiers in the shared `SimpleTelnetCore`, inherited
