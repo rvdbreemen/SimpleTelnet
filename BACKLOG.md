@@ -81,6 +81,45 @@ A minimal, RFC-compliant negotiation layer in the core that:
 - Optional proactive negotiation on connect (behind a flag): server sends
   `WILL ECHO` + `WILL SGA` for char-at-a-time terminals.
 
+#### RFC 854 compliance scope (research 2026-06-16)
+
+A "modern compliant" telnet endpoint does **not** require implementing every
+option. For a debug/CLI/stream **server** the right scope is: parse the whole
+RFC 854 command set correctly, behave correctly on the wire, support ECHO/SGA,
+and *refuse* the rest (refusing is compliant). Tiers:
+
+**MUST (true RFC 854 correctness):**
+- Parse + strip the full command set (240–255): `SE NOP DM BRK IP AO AYT EC EL
+  GA SB WILL WONT DO DONT IAC`. Unknown 2-byte commands consumed harmlessly.
+- `IAC SB <opt> … IAC SE` subnegotiation fully skipped (RFC 855).
+- Refuse options: `DO`→`WONT`, `WILL`→`DONT`.
+- **Outbound IAC escaping** — RFC 854: "Only the IAC need be doubled to be sent
+  as data." A data byte `0xFF` MUST be transmitted as `IAC IAC` (255 255), else
+  the client interprets it as a command. `write()` currently sends raw → gap.
+  Escape `0xFF` on output in negotiation-on modes (raw in `NEG_OFF`).
+- **Loop-robust negotiation** for options we actually enable. Use a *scoped*
+  RFC 1143 "Q method" state machine for ECHO + SGA only (track NO/YES/WANT…
+  per option/side); blanket-refuse everything else (no per-option state for the
+  256-option space). This is the recognised correct anti-loop approach.
+
+**SHOULD (cheap "modern" niceties):**
+- `AYT` (Are You There, 246) → reply with a short visible token
+  (e.g. `\r\n[<host> alive]\r\n`).
+- In line mode, map `EC` (247) → backspace and `EL` (248) → clear current line.
+- Accept both `CR LF` and `CR NUL` as end-of-line (CR NUL already works); keep
+  emitting `\r\n` on output (already the convention).
+
+**OPTIONAL — decline (out of scope, refusing them is compliant):**
+- NAWS (RFC 1073, window size), TERMINAL-TYPE (1091), LINEMODE (1184),
+  NEW-ENVIRON (1572), CHARSET (2066), BINARY (856). These add subnegotiation
+  state + RAM for negligible value on a debug/CLI server. We already answer them
+  with `WONT`/`DONT`. BINARY could be a future opt-in, but outbound IAC escaping
+  already keeps the stream safe.
+
+**Verdict:** the original minimal plan was ~90% there but missed two real MUSTs
+— **outbound IAC escaping** and **loop-robust (scoped Q-method) negotiation**.
+Add those; add AYT + EC/EL as cheap SHOULDs; decline the option zoo.
+
 #### Implementation plan
 
 1. **Core state machine.** Add a per-client IAC parser state
@@ -103,6 +142,14 @@ A minimal, RFC-compliant negotiation layer in the core that:
    change (we now strip + answer instead of silently dropping).
 5. **Keep it allocation-free.** Fixed-size per-client state, no String, no heap —
    consistent with the library's ethos and the shared-core contract.
+6. **Outbound IAC escaping (MUST).** In the core `write(buf,size)` path, when
+   negotiation != `NEG_OFF`, transmit any `0xFF` data byte as `IAC IAC`. Cheapest
+   place is a core write helper that both transports call; keep `NEG_OFF` raw.
+7. **Scoped Q-method (MUST).** Replace the naive "reply once" flags with a small
+   RFC 1143 state machine for ECHO + SGA (per option: us/them × NO/WANTNO/
+   WANTYES/YES). All other options: respond with the terminal refusal only.
+8. **SHOULD niceties.** Reply to `AYT` with a visible token; map `EC`→backspace
+   and `EL`→line-clear in line mode.
 
 #### Acceptance criteria
 
