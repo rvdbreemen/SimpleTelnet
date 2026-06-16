@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal refactor (no public API or behaviour change): the transport-agnostic
+  protocol logic — line/CR-LF parsing, mode handling, callbacks, IP formatting
+  and `printf`/`printf_P` — moved into a new base class `SimpleTelnetCore`
+  (`src/SimpleTelnetCore.h`). `SimpleTelnet` now derives from it and contains
+  only the synchronous `WiFiServer`/`WiFiClient` transport. This lets the
+  parsing/protocol code be shared 1:1 with the planned event-driven async
+  ESP32 fork (`AsyncSimpleTelnet`, built on AsyncTCP) so the two cannot drift.
+
 ## [1.0.0] - 2026-04-12
 
 ### Added

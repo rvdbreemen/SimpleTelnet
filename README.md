@@ -192,6 +192,27 @@ No `String` objects are allocated. No heap fragmentation from callbacks. The CLI
 
 ---
 
+## Architecture
+
+The library is split into two layers so the protocol logic stays transport-agnostic:
+
+- **`SimpleTelnetCore`** (`src/SimpleTelnetCore.h`) — a transport-agnostic base
+  class with all the protocol logic: line/CR-LF parsing, streaming vs CLI mode,
+  callbacks, IP formatting and `printf`/`printf_P`. It knows nothing about
+  sockets; the transport feeds received bytes in and output goes out through the
+  virtual Arduino `Stream` `write()`.
+- **`SimpleTelnet`** (`src/SimpleTelnet.h`) — the synchronous transport that
+  derives from the core: it owns the `WiFiServer`/`WiFiClient[]` and is driven by
+  `loop()`. This is the default for ESP8266 and ESP32.
+
+This separation exists so an **event-driven async ESP32 variant**
+(`AsyncSimpleTelnet`, built on AsyncTCP — same ecosystem as `AsyncWebServer`)
+can reuse the exact same protocol core, keeping the same public API
+(swap the include + class name; `loop()` becomes a no-op) without duplicating —
+and risking drift in — the carefully tuned parsing logic.
+
+---
+
 ## License
 
 MIT: see [LICENSE](LICENSE)
