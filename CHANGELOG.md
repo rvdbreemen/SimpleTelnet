@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- README: prominent "Compliant by default — on purpose" callout in the RFC 854
+  section, with a rule-of-thumb table, explaining that `NEG_REFUSE` (full telnet)
+  is the default and that many libraries calling themselves "telnet" are actually
+  raw byte pipes (`NEG_OFF`).
+
 ## [2.0.0] - 2026-06-16
 
 ### Added
