@@ -119,7 +119,9 @@ negotiation, usually right after connecting).
   and fine for `nc` or binary pipes, but with a real telnet client the
   negotiation bytes can corrupt your input (a printable option code lands in your
   command), some clients stall waiting for a reply, and a `0xFF` in your output is
-  misread as a command. This was the pre-2.0 behaviour.
+  misread as a command. This was the pre-2.0 behaviour. **Many libraries that
+  call themselves "telnet" never leave this mode** — they are really raw byte
+  pipes. SimpleTelnet does not default here.
 - **Compliant** (`NEG_REFUSE`, default; or `NEG_CHAR_ECHO`) — the server speaks
   telnet: it parses and strips `IAC` sequences, answers negotiation
   (refuse-by-default), escapes outbound `0xFF`, and can negotiate ECHO/SGA. Your
@@ -419,6 +421,27 @@ add it to `lib_deps`) to use the async variant.
 ---
 
 ## Telnet protocol (RFC 854) compliance
+
+> ### Compliant by default — on purpose
+>
+> Many libraries call themselves "telnet" but are really a **raw TCP byte pipe**:
+> they pass the client's in-band control bytes (`IAC` negotiation, sent by every
+> real telnet client on connect) straight through. That can drop a stray
+> character into your first command, make some clients stall, and lets a `0xFF`
+> in your output be misread as a command.
+>
+> **SimpleTelnet defaults to `NEG_REFUSE` — it actually speaks telnet:** it
+> parses and strips `IAC`, politely refuses options, and escapes outbound `0xFF`,
+> so PuTTY / Windows `telnet` / `telnet` just work and your callbacks and
+> `read()` see clean data. You opt **down** to raw, not up to compliant.
+>
+> **Rule of thumb:**
+>
+> | Your situation | Mode |
+> |---|---|
+> | Normal use — real telnet clients, CLI or logs | **`NEG_REFUSE`** (default) |
+> | Interactive key-at-a-time CLI with server echo | `NEG_CHAR_ECHO` |
+> | Raw byte pipe / binary stream / `nc` (pre-2.0 behaviour) | `NEG_OFF` |
 
 SimpleTelnet is a protocol-aware telnet server, not just a raw TCP pipe. All IAC
 handling lives in the shared core, so the **sync and async variants behave
