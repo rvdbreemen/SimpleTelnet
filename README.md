@@ -4,6 +4,13 @@ SimpleTelnet is a multi-client telnet server library for ESP8266 and ESP32. It s
 
 Built for Arduino C++, packaged as a self-contained library, and designed to keep its memory footprint honest.
 
+**Since 2.0, the library ships two transports in one package, both on a shared protocol core:**
+
+- **`SimpleTelnet`** — the **synchronous** transport (`WiFiServer`/`WiFiClient`), driven by `loop()`. Runs on **ESP8266 and ESP32**. `#include <SimpleTelnet.h>`.
+- **`AsyncSimpleTelnet`** — the **event-driven async** transport on **AsyncTCP** (same stack as `AsyncWebServer`), with **no `loop()` polling**. **ESP32 only.** `#include <AsyncSimpleTelnet.h>`.
+
+Both expose the same API — migrating is just swapping the include and the class name. And both are **protocol-aware telnet servers**: they implement RFC 854 option negotiation (see [Telnet protocol (RFC 854) compliance](#telnet-protocol-rfc-854-compliance)), not just a raw byte pipe.
+
 ---
 
 ## Why SimpleTelnet?
@@ -45,12 +52,138 @@ If you don't need multi-client or if you don't need callbacks, go use those libr
 | Multi-client | broadcast only | No | No | Yes (`SimpleTelnet<N>`) |
 | Streaming mode | Yes | No | Yes | Yes |
 | CLI / line-input mode | No | Yes | Yes | Yes |
+| Async / event-driven (AsyncTCP) | No | No | No | Yes (`AsyncSimpleTelnet`, ESP32) |
 | Callbacks | No | Yes | Yes | Yes |
 | Callback type | N/A | `String` | `String` | `const char*` |
+| RFC 854 negotiation | minimal | partial | partial | Yes (parse/strip + refuse + ECHO/SGA) |
 | No hidden globals | No | Yes | Yes | Yes |
 | `printf_P` (PROGMEM) | No | No | No | Yes (ESP8266) |
 | ESP8266 + ESP32 | Yes | Yes | Yes | Yes |
 | Minimal RAM design | No | No | No | Yes |
+
+### Complete feature list
+
+**Transports**
+- Synchronous `SimpleTelnet<N>` (`WiFiServer`/`WiFiClient`), **ESP8266 + ESP32**, driven by `loop()`.
+- Asynchronous `AsyncSimpleTelnet<N>` (**AsyncTCP**), **ESP32**, fully event-driven, **no `loop()`**.
+- Both derive from a shared transport-agnostic core (`SimpleTelnetCore`) → identical behaviour, no code drift.
+- `loop()` exists in both (a no-op in async) so sketches port unchanged.
+
+**Connections**
+- Multi-client up to a compile-time `N` (template parameter); **static** per-client slots, no dynamic allocation.
+- Broadcast writes to every connected client.
+- Per-client IP tracking: `clientIP(i)`, `getIP()`, `getLastAttemptIP()`.
+- Events: `onConnect`, `onDisconnect`, `onReconnect` (when `N==1`), `onConnectionAttempt` (rejected when full).
+- `millis()`-based keep-alive with configurable interval (sync); RX-timeout mapping (async).
+- Forced disconnect: `disconnectClient()` / `disconnectClient(index)`; `connectedCount()`, `isConnected()`.
+
+**I/O modes**
+- **Streaming** — Arduino `Stream`: `write`/`print`/`printf` broadcast; `available`/`read`/`peek` polling.
+- **CLI line mode** — buffered line input (CR / LF / CR+LF, backspace), fires `onInputReceived(const char* line)`.
+- **CLI char mode** — per-keystroke `onInputReceived(const char* key)`.
+- Configurable line terminator (`setNewlineChar`); single shared CLI input buffer (RAM-saving); modes selectable per instance and can coexist.
+
+**Telnet protocol (RFC 854 / 855 / 857 / 858 + RFC 1143)**
+- `setTelnetNegotiation`: `NEG_OFF` (raw) / `NEG_REFUSE` (default) / `NEG_CHAR_ECHO`.
+- Full IAC command-set parsing and `SB…SE` subnegotiation skipping.
+- Refuse-by-default (`DO`→`WONT`, `WILL`→`DONT`) via a loop-safe scoped Q method.
+- `ECHO` + `SUPPRESS-GO-AHEAD` negotiation with input echo (character-at-a-time).
+- `IAC IAC` inbound → literal `0xFF`; outbound `0xFF` → `IAC IAC` escaping.
+- `AYT` reply; `EC` → backspace, `EL` → line-clear.
+
+**Output helpers**
+- Full Arduino `Print`/`Stream` (`print`, `println`, `write`, `F()`).
+- `printf()`; `printf_P()` (PROGMEM format strings, ESP8266) — 256-byte stack buffer with heap fallback.
+- Async: non-blocking writes with **TX backpressure** (queued, drained on `onAck`).
+
+**Memory & design**
+- **No `String`** anywhere; `const char*` callbacks → no heap per keystroke.
+- No hidden globals; explicit instantiation.
+- Tunable buffer sizes via `#define` (CLI line buffer, IP length, printf buffer, async RX/TX rings).
+- Footprint ≈ 489 B (`<1>`) … 1033 B (`<4>`) for the sync object.
+
+**Platform & packaging**
+- ESP8266 (sync) and ESP32 (sync + async).
+- One library; **AsyncTCP is an optional dependency** (only pulled in when you include the async header).
+- Arduino Library Manager + PlatformIO metadata; MIT licensed.
+
+## Concepts
+
+### Raw telnet vs RFC-854-compliant telnet
+
+A telnet connection is *not* a plain TCP byte stream: clients send in-band
+control bytes (the `IAC` escape `0xFF` and `WILL/WONT/DO/DONT` option
+negotiation, usually right after connecting).
+
+- **Raw** (`NEG_OFF`) — those control bytes are passed through untouched. Simple
+  and fine for `nc` or binary pipes, but with a real telnet client the
+  negotiation bytes can corrupt your input (a printable option code lands in your
+  command), some clients stall waiting for a reply, and a `0xFF` in your output is
+  misread as a command. This was the pre-2.0 behaviour.
+- **Compliant** (`NEG_REFUSE`, default; or `NEG_CHAR_ECHO`) — the server speaks
+  telnet: it parses and strips `IAC` sequences, answers negotiation
+  (refuse-by-default), escapes outbound `0xFF`, and can negotiate ECHO/SGA. Your
+  callbacks and `read()` see clean data, and PuTTY / Windows `telnet` behave
+  predictably. Details: [RFC 854 compliance](#telnet-protocol-rfc-854-compliance).
+
+### CLI style vs streaming style
+
+Both are selected per instance; they can run side by side (see `DualInstance`).
+
+- **Streaming** (default; no `onInputReceived`) — the instance behaves like an
+  Arduino `Stream`. Output via `write`/`print`/`printf` (broadcast to all
+  clients); input by polling `available()` / `read()` / `peek()`. Ideal for log
+  or serial mirroring and any `Stream`-based code (drop-in for TelnetStream).
+- **CLI** (register `onInputReceived`) — input is delivered to your callback:
+  - **line mode** (`setLineMode(true)`): buffered until a newline, then fired once
+    with the full line (no newline) — ideal for typed commands.
+  - **char mode** (`setLineMode(false)`): fired per keystroke with a 1-char string
+    — ideal for single-key menus (pair with `NEG_CHAR_ECHO` so keys echo).
+
+## How it compares
+
+**Synchronous peers** — the three most popular (see the deep dive in
+[`docs/SYNC_COMPARISON.md`](docs/SYNC_COMPARISON.md)):
+
+- **ESPTelnet / ESPTelnetStream** (Lennart Hennigs) — excellent callback/event
+  model, but single-client and `String`-based (heap per keystroke).
+- **TelnetStream** (Juraj Andrassy) — great streaming `Stream` server, but a
+  hidden global, no callbacks, broadcast-only multi-client.
+- **TelnetSpy** (yasheena) — mirrors `Serial` over telnet; single-client and
+  carries a large (≈3000 B) transmit ring buffer.
+
+**What sets the sync `SimpleTelnet` apart:**
+
+- **On-connect message** — `onConnect(const char* ip)` hands you the client IP so
+  you can print a welcome/banner the moment a client attaches, with no `String`:
+  ```cpp
+  telnet.onConnect([](const char* ip){ telnet.printf("Welcome %s\r\n", ip); });
+  ```
+- **Template-sized clients** — the max number of simultaneous clients is a
+  **compile-time template parameter** (`SimpleTelnet<N>`). All per-client state is
+  allocated statically and sized to exactly what you ask for — no other popular
+  library does this (ESPTelnet/TelnetSpy are single-client; TelnetStream is an
+  unsized broadcast).
+- **Memory minimization as the design goal** — it was born from a heap regression,
+  so: no `String` anywhere (zero heap per keystroke), one *shared* CLI input
+  buffer across all slots, static slots (no `new`, no fragmentation), no hidden
+  global, and tunable buffer sizes. ESPTelnet allocates a `String` per input;
+  TelnetSpy holds a multi-KB ring; SimpleTelnet stays around 489 B (`<1>`).
+
+**Asynchronous peers** — there is **no widely-adopted standalone async telnet
+library**; the popular ones are synchronous, and the async implementations that
+exist are embedded inside firmware projects:
+
+- **robdobsn/AsyncTelnetServer** — closest peer (AsyncTCP, multi-client,
+  `const char*`). SimpleTelnet adds: line/CLI parsing, RFC 854 negotiation, the
+  Arduino `Stream` interface, real TX backpressure, a mutex, heap-free static
+  allocation, and a drop-in shared API with the sync library.
+- **jeremypoulter/WiFiTelnetToSerial** — ESPAsyncTCP telnet↔serial bridge (an
+  app, not a packaged library).
+
+Detailed, code-level comparisons (functionality + implementation patterns):
+[`docs/SYNC_COMPARISON.md`](docs/SYNC_COMPARISON.md) (sync peers) and
+[`docs/ASYNC_COMPARISON.md`](docs/ASYNC_COMPARISON.md) (async peers).
 
 ---
 
@@ -124,6 +257,51 @@ void setup() {
 void loop() {
   telnet.loop();
 }
+```
+
+### Async mode (ESP32, no `loop()` polling)
+
+Same API on AsyncTCP — events arrive on their own, so there is no polling.
+Install [AsyncTCP](https://github.com/ESP32Async/AsyncTCP) and just swap the
+include + class name.
+
+```cpp
+#include <AsyncSimpleTelnet.h>
+
+AsyncSimpleTelnet<4> telnet(23);   // up to 4 clients, ESP32 only
+
+void setup() {
+  WiFi.begin("ssid", "pass");
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  telnet.setLineMode(true);
+  telnet.onConnect([](const char* ip) {
+    telnet.printf("Connected from %s\r\n", ip);
+  });
+  telnet.onInputReceived([](const char* line) {
+    telnet.printf("You typed: %s\r\n", line);
+  });
+
+  telnet.begin();   // event-driven from here on
+}
+
+void loop() {
+  // No telnet.loop() needed — AsyncTCP delivers events on its own task.
+  // (loop() still exists as a no-op, so sync sketches port unchanged.)
+}
+```
+
+Runs alongside `AsyncWebServer` out of the box — see the full
+[`examples/AsyncWebServerTelnet`](examples/AsyncWebServerTelnet) sketch.
+
+### Interactive character-at-a-time CLI (RFC 854 ECHO/SGA)
+
+```cpp
+telnet.setLineMode(false);                              // per-keystroke
+telnet.setTelnetNegotiation(SimpleTelnet<1>::NEG_CHAR_ECHO);  // server echoes
+telnet.onInputReceived([](const char* key) {
+  if (key[0] == 'h') telnet.println(F("help / info / quit"));
+});
 ```
 
 ---
@@ -237,6 +415,56 @@ listed in `depends=`), so sync/ESP8266 users are unaffected. The async header is
 header-only and only pulls in `<AsyncTCP.h>` when you include it — install
 [ESP32Async/AsyncTCP](https://github.com/ESP32Async/AsyncTCP) (PlatformIO:
 add it to `lib_deps`) to use the async variant.
+
+---
+
+## Telnet protocol (RFC 854) compliance
+
+SimpleTelnet is a protocol-aware telnet server, not just a raw TCP pipe. All IAC
+handling lives in the shared core, so the **sync and async variants behave
+identically**. Behaviour is selected with `setTelnetNegotiation(mode)` (default
+`NEG_REFUSE`).
+
+**Implemented (RFC 854 / 855 / 857 / 858, plus RFC 1143 for loop-safe negotiation):**
+
+- **Full IAC command parsing** — the entire command set (`SE, NOP, DM, BRK, IP,
+  AO, AYT, EC, EL, GA, SB, WILL, WONT, DO, DONT, IAC`) is recognised and removed
+  from the data stream, so option bytes never leak into your input (a printable
+  option code can no longer end up in the line buffer).
+- **Option negotiation** — every request is answered: `DO`→`WONT`,
+  `WILL`→`DONT` (refuse), driven by a scoped **RFC 1143 "Q method"** state
+  machine so it never loops.
+- **ECHO (RFC 857) + SUPPRESS-GO-AHEAD (RFC 858)** — in `NEG_CHAR_ECHO` the
+  server proactively negotiates both and echoes input → a true
+  character-at-a-time CLI.
+- **Subnegotiation** — `IAC SB … IAC SE` blocks are skipped safely.
+- **Data transparency** — an incoming `IAC IAC` becomes a single literal
+  `0xFF`; an outgoing `0xFF` data byte is escaped to `IAC IAC`, so binary output
+  stays safe on the wire.
+- **AYT** (Are You There) gets a visible reply; **EC** / **EL** act as
+  backspace / clear-line in CLI mode.
+
+**Intentionally not implemented (and still compliant):**
+
+- The option "zoo" — NAWS, TERMINAL-TYPE, LINEMODE, NEW-ENVIRON, CHARSET,
+  BINARY. We correctly **refuse** these, which RFC 855 permits; they add
+  subnegotiation state for negligible value on a debug/CLI server.
+- **Go-Ahead** signalling and the **Synch / Data-Mark** (TCP urgent) mechanism —
+  obsolete half-duplex concepts no modern client/server uses. We suppress GA via
+  SGA and consume DM harmlessly, which is the standard modern behaviour.
+
+**Modes:**
+
+| Mode | Behaviour |
+|---|---|
+| `NEG_REFUSE` *(default)* | parse + strip IAC, refuse all options, escape output, handle AYT/EC/EL |
+| `NEG_CHAR_ECHO` | as above, **plus** negotiate ECHO/SGA and echo input (interactive CLI) |
+| `NEG_OFF` | legacy raw passthrough — no interpretation (pre-2.0 behaviour) |
+
+> **Note (2.0 default change):** before 2.0, IAC bytes were passed through raw.
+> Since 2.0 the default (`NEG_REFUSE`) strips and answers them, so `read()` and
+> char-mode `onInputReceived` see clean NVT data. Use `NEG_OFF` to restore the
+> old raw behaviour.
 
 ---
 
