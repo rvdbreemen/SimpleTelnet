@@ -175,6 +175,25 @@ class SimpleTelnetCore : public Stream {
   void onInputReceived(SimpleTelnetCallback f);
 
   // -----------------------------------------------------------------------
+  // Telnet option negotiation (RFC 854 / 855)
+  // -----------------------------------------------------------------------
+
+  /**
+   * @brief Telnet IAC negotiation behaviour.
+   *  - NEG_OFF       : raw passthrough — IAC bytes are NOT interpreted (legacy).
+   *  - NEG_REFUSE    : parse + strip IAC, politely refuse every option
+   *                    (DO->WONT, WILL->DONT). Default.
+   *  - NEG_CHAR_ECHO : NEG_REFUSE plus proactively negotiate ECHO + SGA on
+   *                    connect for character-at-a-time terminals.
+   */
+  enum TelnetNegotiation { NEG_OFF = 0, NEG_REFUSE = 1, NEG_CHAR_ECHO = 2 };
+
+  /** @brief Select telnet negotiation behaviour (default NEG_REFUSE). */
+  void setTelnetNegotiation(TelnetNegotiation mode);
+  /** @brief Returns the current telnet negotiation behaviour. */
+  TelnetNegotiation getTelnetNegotiation() const;
+
+  // -----------------------------------------------------------------------
   // printf helpers (ESPTelnet compatibility) — emit via the virtual write()
   // -----------------------------------------------------------------------
 
@@ -225,14 +244,65 @@ class SimpleTelnetCore : public Stream {
   SimpleTelnetCallback _onInput;
 
   // -----------------------------------------------------------------------
+  // Telnet (RFC 854) negotiation state
+  // -----------------------------------------------------------------------
+  // Command codes (RFC 854).
+  enum { TC_SE = 240, TC_NOP = 241, TC_DM = 242, TC_BRK = 243, TC_IP = 244,
+         TC_AO = 245, TC_AYT = 246, TC_EC = 247, TC_EL = 248, TC_GA = 249,
+         TC_SB = 250, TC_WILL = 251, TC_WONT = 252, TC_DO = 253, TC_DONT = 254,
+         TC_IAC = 255 };
+  // Options we understand (RFC 857 / 858); everything else is refused.
+  enum { OPT_ECHO = 1, OPT_SGA = 3 };
+  // IAC parser states.
+  enum { S_DATA = 0, S_IAC, S_WILL, S_WONT, S_DO, S_DONT, S_SB, S_SB_IAC };
+  // Per-option "us" negotiation state (scoped RFC 1143 Q method).
+  enum { US_NO = 0, US_WANTYES = 1, US_YES = 2 };
+
+  TelnetNegotiation _negMode;
+  uint8_t  _iacState[MAX_CLIENTS];   // S_* parser state, persists across reads
+  uint8_t  _optFlags[MAX_CLIENTS];   // bits 0-1: ECHO us-state, bits 2-3: SGA us-state
+  int16_t  _peeked[MAX_CLIENTS];     // sync pull-path 1-byte lookahead (-1 = none)
+
+  // -----------------------------------------------------------------------
   // Protocol helpers — the transport pushes received bytes in here
   // -----------------------------------------------------------------------
 
-  /** @brief Dispatch one received byte to the active input handler. */
-  void _feedChar(char c);
+  /**
+   * @brief Feed received bytes for client idx through the IAC filter, then the
+   * line/char input handlers (callback path). Negotiation is stripped and
+   * answered; only NVT data reaches the handlers.
+   */
+  void _feed(uint8_t idx, const uint8_t* buf, size_t len);
 
-  /** @brief Dispatch a buffer of received bytes (calls _feedChar per byte). */
-  void _feed(const uint8_t* buf, size_t len);
+  /**
+   * @brief Run one received byte through the telnet IAC state machine.
+   * @return the NVT data byte (0..255) to surface, or -1 if the byte was
+   *         consumed by negotiation. Emits replies via _sendToClient().
+   *         In NEG_OFF mode the byte is returned unchanged.
+   */
+  int _filterByte(uint8_t idx, uint8_t b);
+
+  /** @brief Reset per-client negotiation state (call on connect/disconnect). */
+  void _resetNegotiation(uint8_t idx);
+
+  /** @brief Proactively negotiate ECHO+SGA on connect (NEG_CHAR_ECHO only). */
+  void _startNegotiation(uint8_t idx);
+
+  /**
+   * @brief Transport hook: send raw bytes to a single client (NOT escaped).
+   * Used for negotiation replies. Sync: client.write(); async: TX ring.
+   */
+  virtual void _sendToClient(uint8_t idx, const uint8_t* buf, size_t len) = 0;
+
+  // Negotiation internals (scoped RFC 1143 Q method for ECHO/SGA).
+  uint8_t _usState(uint8_t idx, uint8_t opt) const;
+  void    _setUs(uint8_t idx, uint8_t opt, uint8_t st);
+  void    _negReply(uint8_t idx, uint8_t cmd, uint8_t opt);
+  void    _negOnDo(uint8_t idx, uint8_t opt);
+  void    _negOnDont(uint8_t idx, uint8_t opt);
+  void    _negOnWill(uint8_t idx, uint8_t opt);
+  void    _negOnWont(uint8_t idx, uint8_t opt);
+  void    _maybeEcho(uint8_t idx, uint8_t d);
 
   /**
    * @brief Process one character in line (CLI) mode.
@@ -277,11 +347,17 @@ SimpleTelnetCore<MAX_CLIENTS>::SimpleTelnetCore(uint16_t port)
   , _onReconnect(nullptr)
   , _onConnectionAttempt(nullptr)
   , _onInput(nullptr)
+  , _negMode(NEG_REFUSE)
 {
   memset(_clientActive, false, sizeof(_clientActive));
   memset(_ip, 0, sizeof(_ip));
   memset(_attemptIp, 0, sizeof(_attemptIp));
   memset(_inputBuf, 0, sizeof(_inputBuf));
+  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+    _iacState[i] = S_DATA;
+    _optFlags[i] = 0;
+    _peeked[i]   = -1;
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -443,17 +519,156 @@ size_t SimpleTelnetCore<MAX_CLIENTS>::printf_P(PGM_P fmt, ...) {
 // Protocol helpers — input processing
 // -------------------------------------------------------------------------
 template<uint8_t MAX_CLIENTS>
-void SimpleTelnetCore<MAX_CLIENTS>::_feedChar(char c) {
+void SimpleTelnetCore<MAX_CLIENTS>::_feed(uint8_t idx, const uint8_t* buf, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    int d = _filterByte(idx, buf[i]);
+    if (d < 0) continue;                 // consumed by telnet negotiation
+    if (_lineMode) _handleLineInput((char)d);
+    else           _handleCharInput((char)d);
+  }
+}
+
+// -------------------------------------------------------------------------
+// Telnet (RFC 854) IAC state machine + scoped RFC 1143 (ECHO/SGA) negotiation
+// -------------------------------------------------------------------------
+template<uint8_t MAX_CLIENTS>
+int SimpleTelnetCore<MAX_CLIENTS>::_filterByte(uint8_t idx, uint8_t b) {
+  if (_negMode == NEG_OFF) return b;     // raw passthrough (legacy)
+
+  switch (_iacState[idx]) {
+    case S_DATA:
+      if (b == TC_IAC) { _iacState[idx] = S_IAC; return -1; }
+      _maybeEcho(idx, b);
+      return b;
+
+    case S_IAC:
+      switch (b) {
+        case TC_IAC:  _iacState[idx] = S_DATA; _maybeEcho(idx, 0xFF); return 0xFF; // escaped data 255
+        case TC_WILL: _iacState[idx] = S_WILL; return -1;
+        case TC_WONT: _iacState[idx] = S_WONT; return -1;
+        case TC_DO:   _iacState[idx] = S_DO;   return -1;
+        case TC_DONT: _iacState[idx] = S_DONT; return -1;
+        case TC_SB:   _iacState[idx] = S_SB;   return -1;
+        case TC_AYT: {                          // SHOULD: visible liveness reply
+          static const uint8_t ayt[] = { '\r', '\n', '[', 't', 'e', 'l', 'n',
+                                         'e', 't', ']', ' ', 'y', 'e', 's',
+                                         '\r', '\n' };
+          _sendToClient(idx, ayt, sizeof(ayt));
+          _iacState[idx] = S_DATA; return -1;
+        }
+        case TC_EC:                              // SHOULD: erase last char (line mode)
+          if (_lineMode && _inputLen > 0) _inputLen--;
+          _iacState[idx] = S_DATA; return -1;
+        case TC_EL:                              // SHOULD: erase current line
+          if (_lineMode) { _inputLen = 0; _lastWasCR = false; }
+          _iacState[idx] = S_DATA; return -1;
+        default:                                 // NOP/DM/BRK/IP/AO/GA/... : ignore
+          _iacState[idx] = S_DATA; return -1;
+      }
+
+    case S_WILL: _negOnWill(idx, b); _iacState[idx] = S_DATA; return -1;
+    case S_WONT: _negOnWont(idx, b); _iacState[idx] = S_DATA; return -1;
+    case S_DO:   _negOnDo(idx, b);   _iacState[idx] = S_DATA; return -1;
+    case S_DONT: _negOnDont(idx, b); _iacState[idx] = S_DATA; return -1;
+
+    case S_SB:                                   // skip subnegotiation payload
+      if (b == TC_IAC) _iacState[idx] = S_SB_IAC;
+      return -1;
+    case S_SB_IAC:                               // IAC inside SB: SE ends it, IAC IAC = data
+      _iacState[idx] = (b == TC_IAC) ? S_SB : S_DATA;
+      return -1;
+  }
+  _iacState[idx] = S_DATA;
+  return -1;
+}
+
+template<uint8_t MAX_CLIENTS>
+uint8_t SimpleTelnetCore<MAX_CLIENTS>::_usState(uint8_t idx, uint8_t opt) const {
+  return (opt == OPT_ECHO) ? (_optFlags[idx] & 0x03)
+                           : ((_optFlags[idx] >> 2) & 0x03);
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_setUs(uint8_t idx, uint8_t opt, uint8_t st) {
+  if (opt == OPT_ECHO) _optFlags[idx] = (_optFlags[idx] & ~0x03) | (st & 0x03);
+  else                 _optFlags[idx] = (_optFlags[idx] & ~0x0C) | ((st & 0x03) << 2);
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_negReply(uint8_t idx, uint8_t cmd, uint8_t opt) {
+  uint8_t r[3] = { (uint8_t)TC_IAC, cmd, opt };
+  _sendToClient(idx, r, 3);
+}
+
+// Peer asks US to enable <opt>.
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_negOnDo(uint8_t idx, uint8_t opt) {
+  bool weSupport = (_negMode == NEG_CHAR_ECHO) && (opt == OPT_ECHO || opt == OPT_SGA);
+  if (!weSupport) { _negReply(idx, TC_WONT, opt); return; }   // refuse everything else
+  uint8_t st = _usState(idx, opt);
+  if (st == US_NO)        { _setUs(idx, opt, US_YES); _negReply(idx, TC_WILL, opt); }
+  else if (st == US_WANTYES) { _setUs(idx, opt, US_YES); }     // agreement to our WILL
+  // US_YES: already on — ignore (loop guard)
+}
+
+// Peer asks US to disable <opt>.
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_negOnDont(uint8_t idx, uint8_t opt) {
+  if (opt != OPT_ECHO && opt != OPT_SGA) return;              // we never enabled others
+  uint8_t st = _usState(idx, opt);
+  if (st == US_YES)        { _setUs(idx, opt, US_NO); _negReply(idx, TC_WONT, opt); }
+  else if (st == US_WANTYES) { _setUs(idx, opt, US_NO); }      // peer refused our WILL
+  // US_NO: ignore
+}
+
+// Peer offers to perform <opt>. We want nothing from the peer -> refuse.
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_negOnWill(uint8_t idx, uint8_t opt) {
+  _negReply(idx, TC_DONT, opt);
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_negOnWont(uint8_t idx, uint8_t opt) {
+  (void)idx; (void)opt;   // terminal — nothing to do
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_maybeEcho(uint8_t idx, uint8_t d) {
+  if (_usState(idx, OPT_ECHO) != US_YES) return;   // only when WE echo (CHAR_ECHO agreed)
   if (_lineMode) {
-    _handleLineInput(c);
+    if (d == '\r' || d == '\n') { uint8_t crlf[2] = { '\r', '\n' }; _sendToClient(idx, crlf, 2); }
+    else if (d == '\x08' || d == '\x7F') { static const uint8_t bs[3] = { '\b', ' ', '\b' }; _sendToClient(idx, bs, 3); }
+    else if (d >= 0x20 && d < 0x7F) { _sendToClient(idx, &d, 1); }
+    // else: control byte — do not echo
   } else {
-    _handleCharInput(c);
+    _sendToClient(idx, &d, 1);   // char mode: echo raw byte
   }
 }
 
 template<uint8_t MAX_CLIENTS>
-void SimpleTelnetCore<MAX_CLIENTS>::_feed(const uint8_t* buf, size_t len) {
-  for (size_t i = 0; i < len; i++) _feedChar((char)buf[i]);
+void SimpleTelnetCore<MAX_CLIENTS>::_resetNegotiation(uint8_t idx) {
+  _iacState[idx] = S_DATA;
+  _optFlags[idx] = 0;
+  _peeked[idx]   = -1;
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::_startNegotiation(uint8_t idx) {
+  if (_negMode != NEG_CHAR_ECHO) return;
+  // We offer to ECHO and to SUPPRESS-GO-AHEAD (character-at-a-time terminal).
+  _setUs(idx, OPT_ECHO, US_WANTYES); _negReply(idx, TC_WILL, OPT_ECHO);
+  _setUs(idx, OPT_SGA,  US_WANTYES); _negReply(idx, TC_WILL, OPT_SGA);
+}
+
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnetCore<MAX_CLIENTS>::setTelnetNegotiation(TelnetNegotiation mode) {
+  _negMode = mode;
+}
+
+template<uint8_t MAX_CLIENTS>
+typename SimpleTelnetCore<MAX_CLIENTS>::TelnetNegotiation
+SimpleTelnetCore<MAX_CLIENTS>::getTelnetNegotiation() const {
+  return _negMode;
 }
 
 template<uint8_t MAX_CLIENTS>

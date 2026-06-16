@@ -161,6 +161,10 @@ class AsyncSimpleTelnet : public SimpleTelnetCore<MAX_CLIENTS> {
   void _onClientDisconnect(uint8_t idx);
   void _releaseSlot(uint8_t idx, bool triggerEvent);
   void _flushTx(uint8_t idx);
+
+  // Telnet (RFC 854) transport hooks.
+  void _sendToClient(uint8_t idx, const uint8_t* buf, size_t len) override;  // raw, unescaped
+  uint16_t _pushEscaped(uint8_t idx, const uint8_t* buf, uint16_t len);      // doubles 0xFF
 };
 
 // =========================================================================
@@ -290,6 +294,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_attachClient(uint8_t idx, AsyncClient* c) 
   this->_extractIP(c->remoteIP(), this->_ip[idx], sizeof(this->_ip[idx]));
   this->_clientActive[idx] = true;
   this->_connectedCount++;
+  this->_resetNegotiation(idx);   // fresh IAC parser state before data arrives
 
   c->setNoDelay(true);
   // Map keep-alive interval (ms) to AsyncTCP RX timeout (seconds, rounded up).
@@ -322,6 +327,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_attachClient(uint8_t idx, AsyncClient* c) 
   }, arg);
 
   if (this->_onConnect) this->_onConnect(this->_ip[idx]);
+  this->_startNegotiation(idx);   // proactive ECHO/SGA (NEG_CHAR_ECHO); via _tx
 }
 
 template<uint8_t MAX_CLIENTS>
@@ -346,6 +352,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_releaseSlot(uint8_t idx, bool triggerEvent
   this->_clientActive[idx] = false;
   _rx[idx].clear();
   _tx[idx].clear();
+  this->_resetNegotiation(idx);
   if (this->_connectedCount > 0) this->_connectedCount--;
 
   // If we still own a live handle (explicit disconnect, not an onDisconnect
@@ -362,11 +369,14 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_onData(uint8_t idx, const uint8_t* data, s
   _lock();
   if (!this->_clientActive[idx]) { _unlock(); return; }
   if (this->_onInput) {
-    // Callback mode: parse immediately (line/char), no buffering needed.
-    this->_feed(data, len);
+    // Callback mode: filter IAC + parse immediately (line/char), no buffering.
+    this->_feed(idx, data, len);
   } else {
-    // Pull mode: stash for read()/available()/peek(). Overflow is dropped.
-    _rx[idx].push(data, (uint16_t)(len > 0xFFFF ? 0xFFFF : len));
+    // Pull mode: filter IAC, stash NVT data for read()/available()/peek().
+    for (size_t i = 0; i < len; i++) {
+      int d = this->_filterByte(idx, data[i]);
+      if (d >= 0) { uint8_t db = (uint8_t)d; _rx[idx].push(&db, 1); }
+    }
   }
   _unlock();
 }
@@ -424,13 +434,40 @@ size_t AsyncSimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
   uint16_t n16 = (uint16_t)(size > 0xFFFF ? 0xFFFF : size);
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!this->_clientActive[i]) continue;
-    uint16_t pushed = _tx[i].push(buf, n16);   // bytes beyond capacity are dropped
+    uint16_t pushed = _pushEscaped(i, buf, n16);   // 0xFF -> IAC IAC when negotiating
     if (pushed > 0) anyOk = true;
     _flushTx(i);
   }
   _unlock();
   // Stream contract: report the logical byte count if any client accepted data.
   return anyOk ? size : 0;
+}
+
+// Push data to the TX ring, doubling 0xFF -> IAC IAC (RFC 854) unless NEG_OFF.
+template<uint8_t MAX_CLIENTS>
+uint16_t AsyncSimpleTelnet<MAX_CLIENTS>::_pushEscaped(uint8_t idx, const uint8_t* buf, uint16_t len) {
+  if (this->_negMode == SimpleTelnetCore<MAX_CLIENTS>::NEG_OFF) {
+    return _tx[idx].push(buf, len);
+  }
+  uint16_t pushed = 0;
+  for (uint16_t i = 0; i < len; i++) {
+    if (buf[i] == 0xFF) {
+      static const uint8_t ff2[2] = { 0xFF, 0xFF };
+      pushed += _tx[idx].push(ff2, 2);
+    } else {
+      pushed += _tx[idx].push(&buf[i], 1);
+    }
+  }
+  return pushed;
+}
+
+// Raw write for negotiation replies (already valid IAC bytes — never escaped).
+// Callers hold the recursive mutex.
+template<uint8_t MAX_CLIENTS>
+void AsyncSimpleTelnet<MAX_CLIENTS>::_sendToClient(uint8_t idx, const uint8_t* buf, size_t len) {
+  if (!this->_clientActive[idx]) return;
+  _tx[idx].push(buf, (uint16_t)len);
+  _flushTx(idx);
 }
 
 template<uint8_t MAX_CLIENTS>

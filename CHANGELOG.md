@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Telnet (RFC 854) option negotiation** in the shared core (BL-001/001a/001b).
+  `setTelnetNegotiation(NEG_OFF | NEG_REFUSE | NEG_CHAR_ECHO)`:
+  - `NEG_REFUSE` (default): parse + strip IAC sequences, politely refuse every
+    option (`DO`→`WONT`, `WILL`→`DONT`), skip subnegotiation (`SB…SE`), honour
+    `IAC IAC` as a literal `0xFF`, and reply to `AYT`; `EC`/`EL` act as
+    backspace / line-clear in line mode.
+  - `NEG_CHAR_ECHO`: also negotiates `ECHO` + `SUPPRESS-GO-AHEAD` (scoped
+    RFC 1143 Q method) and echoes input for character-at-a-time terminals.
+  - `NEG_OFF`: legacy raw passthrough (no interpretation).
+  - **Outbound IAC escaping**: a `0xFF` data byte is sent as `IAC IAC`
+    (RFC 854) in negotiation-on modes.
+  Implemented once in `SimpleTelnetCore`, inherited by both `SimpleTelnet`
+  (sync) and `AsyncSimpleTelnet` (async).
+
 ### Changed
 - Internal refactor (no public API or behaviour change): the transport-agnostic
   protocol logic — line/CR-LF parsing, mode handling, callbacks, IP formatting

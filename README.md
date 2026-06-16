@@ -177,6 +177,17 @@ Key differences from TelnetStream at a glance:
 - `loop()` must be called from `loop()` for keepalive and callbacks
 - `MAX_CLIENTS` is a template parameter, not a runtime value
 
+### Telnet (RFC 854) negotiation
+
+`setTelnetNegotiation(mode)` controls IAC option negotiation:
+- `NEG_REFUSE` (default) — parse and strip IAC sequences, politely refuse every
+  option (`DO`→`WONT`, `WILL`→`DONT`), skip subnegotiation, honour `IAC IAC`,
+  reply to `AYT`, and treat `EC`/`EL` as backspace / line-clear. Outbound `0xFF`
+  is escaped as `IAC IAC`.
+- `NEG_CHAR_ECHO` — also negotiates `ECHO` + `SUPPRESS-GO-AHEAD` and echoes
+  input, for an interactive character-at-a-time CLI.
+- `NEG_OFF` — legacy raw passthrough (no interpretation).
+
 ---
 
 ## Memory Footprint

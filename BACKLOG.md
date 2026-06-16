@@ -19,7 +19,7 @@ criteria, tracked in-repo so the history travels with the code.
 
 ### BL-001 — Telnet option negotiation (RFC 854 / IAC handling)
 
-- **Status:** TODO
+- **Status:** DONE (MUST + SHOULD tiers; see `## Done`)
 - **Priority:** P2
 - **Area:** protocol core (`src/SimpleTelnetCore.h`) + both transports
 - **Applies to:** `SimpleTelnet` (sync) and `AsyncSimpleTelnet` (async) — the
@@ -192,7 +192,7 @@ Add those; add AYT + EC/EL as cheap SHOULDs; decline the option zoo.
 
 ### BL-001a — RFC 854 negotiation: synchronous `SimpleTelnet` transport
 
-- **Status:** TODO
+- **Status:** DONE (see `## Done`)
 - **Priority:** P2
 - **Area:** `src/SimpleTelnet.h` + `src/SimpleTelnet_impl.tpp` (consumes the
   core parser/policy from BL-001)
@@ -286,7 +286,7 @@ TCP buffer), so we must add negotiation without reintroducing a big buffer.
 
 ### BL-001b — RFC 854 negotiation: asynchronous `AsyncSimpleTelnet` transport
 
-- **Status:** TODO
+- **Status:** DONE (implemented; async transport still pending HW validation)
 - **Priority:** P3 (after async hardware validation)
 - **Area:** `async/src/AsyncSimpleTelnet.h`
 - **Depends on:** BL-001.
@@ -303,4 +303,25 @@ hardware-validated.
 
 ## Done
 
-_(none yet)_
+### BL-001 / BL-001a / BL-001b — Telnet (RFC 854) option negotiation — 2026-06-16
+
+Implemented the MUST + SHOULD tiers in the shared `SimpleTelnetCore`, inherited
+by both `SimpleTelnet` (sync) and `AsyncSimpleTelnet` (async):
+
+- IAC state machine parses + strips the full RFC 854 command set and `SB…SE`
+  subnegotiation; `IAC IAC` surfaces a literal `0xFF`.
+- Refuse policy: `DO`→`WONT`, `WILL`→`DONT`; scoped RFC 1143 Q method for
+  `ECHO`/`SGA` (loop-safe), with input echo when ECHO is active.
+- `setTelnetNegotiation(NEG_OFF | NEG_REFUSE | NEG_CHAR_ECHO)`, default
+  `NEG_REFUSE`. `NEG_OFF` reproduces the legacy raw passthrough.
+- Outbound IAC escaping: `0xFF` data byte → `IAC IAC`.
+- SHOULDs: `AYT` reply; `EC`→backspace, `EL`→line-clear in line mode.
+- Transport hook `_sendToClient(idx,…)`: sync writes directly; async queues to
+  the TX ring. Sync pull path (`read/peek/available`) filters IAC with a 1-byte
+  lookahead and a persistent per-client FSM (handles split sequences).
+
+Verified on the host stub harness (g++ -Wall -Wextra): DO→WONT, WILL→DONT,
+printable-option no-leak, IAC IAC data, SB skip, split sequence, CHAR_ECHO
+proactive WILL ECHO/SGA + echo, outbound escaping (+ OFF passthrough); ESP8266
+and ESP32 paths compile. The async transport wiring itself remains pending
+on-hardware validation (tracked with the async prototype).

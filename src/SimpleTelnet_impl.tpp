@@ -94,20 +94,9 @@ void SimpleTelnet<MAX_CLIENTS>::disconnectClient(uint8_t index, bool triggerEven
 // -------------------------------------------------------------------------
 template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::write(uint8_t val) {
-  if (this->_connectedCount == 0) return 0;
-  bool anyOk = false;
-  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
-    if (!this->_clientActive[i]) continue;
-    if (_clients[i].write(val) == 0) {
-      _onWriteError(i);
-    } else {
-      _writeErrors[i] = 0;
-      anyOk = true;
-    }
-  }
-  // Return 1 if at least one client received it, 0 if all failed.
-  // Stream contract: return bytes written to "the stream", not client count.
-  return anyOk ? 1 : 0;
+  // Route through the buffer overload so 0xFF escaping (RFC 854) is applied
+  // in one place.
+  return write(&val, 1);
 }
 
 template<uint8_t MAX_CLIENTS>
@@ -116,7 +105,7 @@ size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
   bool anyOk = false;
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!this->_clientActive[i]) continue;
-    size_t n = _clients[i].write(buf, size);
+    size_t n = _writeClient(i, buf, size);
     if (n == 0) {
       // Total write failure: the TCP stack couldn't accept even one byte.
       // This is the reliable signal of a dead connection.
@@ -139,20 +128,42 @@ size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
 // -------------------------------------------------------------------------
 template<uint8_t MAX_CLIENTS>
 int SimpleTelnet<MAX_CLIENTS>::available() {
-  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
-    if (this->_clientActive[i]) {
-      int n = _clients[i].available();
-      if (n > 0) return n;   // return first non-zero, not sum
+  if (this->_negMode == SimpleTelnetCore<MAX_CLIENTS>::NEG_OFF) {
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+      if (this->_clientActive[i]) {
+        int n = _clients[i].available();
+        if (n > 0) return n;   // return first non-zero, not sum
+      }
     }
+    return 0;
+  }
+  // Negotiation on: count is a hint (raw bytes may include IAC sequences).
+  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+    if (!this->_clientActive[i]) continue;
+    if (this->_peeked[i] >= 0) return 1 + _clients[i].available();
+    int n = _clients[i].available();
+    if (n > 0) return n;
   }
   return 0;
 }
 
 template<uint8_t MAX_CLIENTS>
 int SimpleTelnet<MAX_CLIENTS>::read() {
+  if (this->_negMode == SimpleTelnetCore<MAX_CLIENTS>::NEG_OFF) {
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+      if (this->_clientActive[i] && _clients[i].available()) {
+        return _clients[i].read();
+      }
+    }
+    return -1;
+  }
+  // Negotiation on: filter IAC sequences out of the pull path.
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
-    if (this->_clientActive[i] && _clients[i].available()) {
-      return _clients[i].read();
+    if (!this->_clientActive[i]) continue;
+    if (this->_peeked[i] >= 0) { int v = this->_peeked[i]; this->_peeked[i] = -1; return v; }
+    while (_clients[i].available()) {
+      int d = this->_filterByte(i, (uint8_t)_clients[i].read());
+      if (d >= 0) return d;
     }
   }
   return -1;
@@ -160,9 +171,21 @@ int SimpleTelnet<MAX_CLIENTS>::read() {
 
 template<uint8_t MAX_CLIENTS>
 int SimpleTelnet<MAX_CLIENTS>::peek() {
+  if (this->_negMode == SimpleTelnetCore<MAX_CLIENTS>::NEG_OFF) {
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+      if (this->_clientActive[i] && _clients[i].available()) {
+        return _clients[i].peek();
+      }
+    }
+    return -1;
+  }
+  // Negotiation on: consume/answer IAC, hold the first NVT byte in _peeked.
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
-    if (this->_clientActive[i] && _clients[i].available()) {
-      return _clients[i].peek();
+    if (!this->_clientActive[i]) continue;
+    if (this->_peeked[i] >= 0) return this->_peeked[i];
+    while (_clients[i].available()) {
+      int d = this->_filterByte(i, (uint8_t)_clients[i].read());
+      if (d >= 0) { this->_peeked[i] = (int16_t)d; return d; }
     }
   }
   return -1;
@@ -254,8 +277,10 @@ void SimpleTelnet<MAX_CLIENTS>::_connectClient(uint8_t idx, WiFiClient& c) {
   this->_clientActive[idx] = true;
   _writeErrors[idx] = 0;
   this->_connectedCount++;
+  this->_resetNegotiation(idx);                // fresh IAC parser state
   _drainClient(idx);                           // flush telnet negotiation
   if (this->_onConnect) this->_onConnect(this->_ip[idx]);
+  this->_startNegotiation(idx);                // proactive ECHO/SGA (NEG_CHAR_ECHO)
 #if defined(ARDUINO_ARCH_ESP8266)
   // Non-blocking flush: nudge the TCP stack to send the connect banner
   // immediately rather than waiting for the next yield().  Without this the
@@ -273,6 +298,7 @@ void SimpleTelnet<MAX_CLIENTS>::_disconnectClient(uint8_t idx, bool triggerEvent
   this->_ip[idx][0] = '\0';
   this->_clientActive[idx] = false;
   _writeErrors[idx] = 0;
+  this->_resetNegotiation(idx);
   if (this->_connectedCount > 0) this->_connectedCount--;
 }
 
@@ -310,7 +336,8 @@ void SimpleTelnet<MAX_CLIENTS>::_processInput() {
     while (_clients[i].available()) {
       int b = _clients[i].read();
       if (b < 0) break;
-      this->_feedChar((char)b);
+      uint8_t bb = (uint8_t)b;
+      this->_feed(i, &bb, 1);   // filters IAC, then dispatches NVT data
     }
   }
 }
@@ -337,4 +364,39 @@ void SimpleTelnet<MAX_CLIENTS>::_onWriteError(uint8_t idx) {
     _writeErrors[idx] = 0;
     _disconnectClient(idx, true);
   }
+}
+
+// -------------------------------------------------------------------------
+// Telnet transport hooks (RFC 854)
+// -------------------------------------------------------------------------
+template<uint8_t MAX_CLIENTS>
+void SimpleTelnet<MAX_CLIENTS>::_sendToClient(uint8_t idx, const uint8_t* buf, size_t len) {
+  // Raw, un-escaped write for negotiation replies (already valid IAC bytes).
+  if (!this->_clientActive[idx]) return;
+  _clients[idx].write(buf, len);
+#if defined(ARDUINO_ARCH_ESP8266)
+  _clients[idx].flush(0);   // nudge the small reply out immediately
+#endif
+}
+
+template<uint8_t MAX_CLIENTS>
+size_t SimpleTelnet<MAX_CLIENTS>::_writeClient(uint8_t idx, const uint8_t* buf, size_t size) {
+  if (size == 0) return 0;
+  if (this->_negMode == SimpleTelnetCore<MAX_CLIENTS>::NEG_OFF) {
+    return _clients[idx].write(buf, size);
+  }
+  // RFC 854: a data byte 0xFF must be doubled to IAC IAC. Write runs between
+  // 0xFF bytes; insert a second 0xFF for each. No temp buffer needed.
+  static const uint8_t ff2[2] = { 0xFF, 0xFF };
+  bool anyOk = false;
+  size_t start = 0;
+  for (size_t i = 0; i < size; i++) {
+    if (buf[i] == 0xFF) {
+      if (i > start && _clients[idx].write(buf + start, i - start) > 0) anyOk = true;
+      if (_clients[idx].write(ff2, 2) > 0) anyOk = true;
+      start = i + 1;
+    }
+  }
+  if (start < size && _clients[idx].write(buf + start, size - start) > 0) anyOk = true;
+  return anyOk ? size : 0;
 }

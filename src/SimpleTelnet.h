@@ -163,6 +163,16 @@ class SimpleTelnet : public SimpleTelnetCore<MAX_CLIENTS> {
 
   /** @brief Increment write-error counter for slot idx; evict at threshold. */
   void _onWriteError(uint8_t idx);
+
+  /** @brief Transport hook for negotiation replies — raw write to one client. */
+  void _sendToClient(uint8_t idx, const uint8_t* buf, size_t len) override;
+
+  /**
+   * @brief Write a data buffer to one client, doubling 0xFF -> IAC IAC when
+   * negotiation is enabled (RFC 854). Returns the original byte count if any
+   * byte was accepted, else 0.
+   */
+  size_t _writeClient(uint8_t idx, const uint8_t* buf, size_t size);
 };
 
 // -------------------------------------------------------------------------

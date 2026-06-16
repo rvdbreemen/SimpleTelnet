@@ -33,7 +33,7 @@ niche AsyncSimpleTelnet targets.
 | Callback payload type | `String` | `const char*` | `uint8_t*` | `const char*` |
 | Heap in steady state | yes (String) | yes (`std::vector`/`new`) | yes (linked list/`new`) | **no** (static arrays) |
 | Line / CLI mode parsing | ✅ | ❌ raw | ❌ raw | ✅ (CR/LF/CR+LF) |
-| Telnet IAC byte handling | partial | ❌ | ❌ | ✅ (ignores ≥0x80) |
+| Telnet IAC byte handling | partial | ❌ | ❌ | ✅ RFC 854 (parse/strip, refuse, ECHO/SGA, IAC-escape) |
 | Arduino `Stream` interface | ✅ (sync) | ❌ callback-only | ❌ callback-only | ✅ via RX ring |
 | TX backpressure | n/a (blocking) | ❌ `canSend()` then drop | ~ tracks `toSend` | ✅ TX ring drained on `onAck` |
 | Thread-safety (mutex) | n/a | ❌ none | ❌ none | ✅ recursive mutex |
