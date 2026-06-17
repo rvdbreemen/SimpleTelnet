@@ -303,10 +303,15 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_attachClient(uint8_t idx, AsyncClient* c) 
   this->_resetNegotiation(idx);   // fresh IAC parser state before data arrives
 
   c->setNoDelay(true);
-  // Map keep-alive interval (ms) to AsyncTCP RX timeout (seconds, rounded up).
-  uint32_t secs = (this->_keepAliveInterval + 999u) / 1000u;
-  if (secs == 0) secs = 1;
-  c->setRxTimeout(secs);
+  // BUGFIX (TASK-879): do NOT map the keep-alive interval onto the AsyncTCP RX
+  // timeout. setRxTimeout(N) closes the socket when NO DATA is RECEIVED from the
+  // peer for N seconds — but a telnet/debug console is almost entirely OUTBOUND
+  // (device -> client); the client is normally silent, so a 1s RX timeout dropped
+  // every healthy session after ~1-2s (the reported "telnet connects then
+  // disconnects"). Keep-alive must DETECT a dead peer (send a probe), never close
+  // a quiet-but-alive one. Disable the RX-idle close; AsyncTCP/TCP still reap
+  // genuinely dead connections via poll/keepalive.
+  c->setRxTimeout(0);   // 0 = no RX-idle timeout
 
   void* arg = &_ctx[idx];
   c->onData([](void* a, AsyncClient*, void* data, size_t len) {
@@ -340,11 +345,19 @@ template<uint8_t MAX_CLIENTS>
 void AsyncSimpleTelnet<MAX_CLIENTS>::_onClientDisconnect(uint8_t idx) {
   _lock();
   bool wasActive = this->_clientActive[idx];
-  // The AsyncClient is being torn down by AsyncTCP; drop our reference first
-  // so _releaseSlot does not try to close/delete it again.
+  // BUGFIX (TASK-879): AsyncTCP does NOT delete server-accepted AsyncClients — the
+  // application owns them (verified in AsyncTCP.cpp: the FIN/error handlers clear
+  // the pcb and fire onDisconnect but never `delete this`). The old code nulled
+  // _clientPtr here BEFORE _releaseSlot, so _releaseSlot's `delete c` never ran and
+  // every disconnect leaked ~200 bytes. Capture the handle, let _releaseSlot clear
+  // our state, then delete it ourselves — this onDisconnect callback is the
+  // canonical, single-owner place to free a server-accepted client. No close() on
+  // this path: the pcb is already being torn down by AsyncTCP.
+  AsyncClient* c = _clientPtr[idx];
   _clientPtr[idx] = nullptr;
-  if (wasActive) _releaseSlot(idx, true);
+  if (wasActive) _releaseSlot(idx, true);   // sees _clientPtr==null -> won't touch c
   _unlock();
+  if (c) delete c;                          // free outside the lock (event path)
 }
 
 template<uint8_t MAX_CLIENTS>
