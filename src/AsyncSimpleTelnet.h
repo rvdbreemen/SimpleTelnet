@@ -322,10 +322,14 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_attachClient(uint8_t idx, AsyncClient* c) 
     Ctx* ctx = static_cast<Ctx*>(a);
     ctx->self->_onClientDisconnect(ctx->idx);
   }, arg);
-  c->onError([](void* a, AsyncClient*, int8_t) {
-    Ctx* ctx = static_cast<Ctx*>(a);
-    ctx->self->_onClientDisconnect(ctx->idx);
-  }, arg);
+  // BUGFIX: do NOT also wire onError to the deleting _onClientDisconnect. Since
+  // _onClientDisconnect now `delete c`'s the client (single-owner cleanup), having
+  // BOTH callbacks delete it causes a use-after-free on a TCP RST: AsyncClient::
+  // _error() invokes the error callback (-> delete c) and then dereferences
+  // `this->_discard_cb` (the onDisconnect callback) on the freed object. _error()
+  // always calls _discard_cb (onDisconnect) right after the error callback anyway,
+  // so the error path is still cleaned up exactly once via onDisconnect — and
+  // _error() never touches `this` after that call, so no UAF.
   c->onTimeout([](void* a, AsyncClient* cl, uint32_t) {
     cl->close();   // RX timeout -> close; onDisconnect will clean the slot
     (void)a;
