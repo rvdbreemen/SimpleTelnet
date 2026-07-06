@@ -24,7 +24,7 @@
  * at the protocol-core level, but the async transport wiring is not yet
  * validated on hardware. See docs/ASYNC.md.
  *
- * Copyright (c) 2026 Robert van den Breemen — MIT License
+ * Copyright (c) 2026 Robert van den Breemen -- GNU GPLv3
  */
 
 #pragma once

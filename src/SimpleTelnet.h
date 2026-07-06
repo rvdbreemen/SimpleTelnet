@@ -15,7 +15,7 @@
  * SimpleTelnetCore.h, which is shared with the async ESP32 fork.
  *
  * Copyright (c) 2026 Robert van den Breemen
- * MIT License — see LICENSE
+ * GNU GPLv3 -- see LICENSE
  *
  * Inspired by / shout-out to:
  *   Lennart Hennigs  — ESPTelnet  https://github.com/LennartHennigs/ESPTelnet
