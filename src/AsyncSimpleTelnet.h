@@ -288,7 +288,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_handleNewClient(AsyncClient* c) {
 
   _unlock();
   // Rejected: we own the client handle; closing + deleting drops the connection.
-  c->close(true);
+  c->close();
   delete c;
 }
 
@@ -381,7 +381,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_releaseSlot(uint8_t idx, bool triggerEvent
   // If we still own a live handle (explicit disconnect, not an onDisconnect
   // event), close and delete it. On an event-driven disconnect the pointer was
   // already cleared by _onClientDisconnect and AsyncTCP frees the client.
-  if (c) { c->close(true); delete c; }
+  if (c) { c->close(); delete c; }
 }
 
 // -------------------------------------------------------------------------
