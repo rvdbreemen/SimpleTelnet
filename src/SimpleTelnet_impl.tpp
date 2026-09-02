@@ -347,17 +347,24 @@ void SimpleTelnet<MAX_CLIENTS>::_processInput() {
 
 template<uint8_t MAX_CLIENTS>
 void SimpleTelnet<MAX_CLIENTS>::_drainClient(uint8_t idx) {
-  // Flush outgoing data, then discard any incoming bytes (telnet negotiation).
-  // Deliberately no delay() — we are in a cooperative scheduler.
+  // Flush OUTGOING data only. Deliberately no delay() — we are in a
+  // cooperative scheduler.
+  //
+  // This used to also read and throw away every pending inbound byte, with the
+  // comment "discard any incoming bytes (telnet negotiation)". That loop was
+  // unconditional, so it could not tell an IAC sequence from payload: a client
+  // that pipelines a command with connect() lost it at accept, and a client
+  // that wrote and then closed lost its last command at teardown. Negotiation
+  // is handled per byte by _filterByte() on the read path, which is where it
+  // belongs, so nothing here needs to pre-strip it. On a raw data port such as
+  // the OTmonitor bridge there is no negotiation to strip at all and the loop
+  // could only destroy user data.
 #if defined(ARDUINO_ARCH_ESP8266)
   // ESP8266: flush(timeout_ms) returns bool — ignore result during drain.
   _clients[idx].flush(this->_keepAliveInterval);
 #else
   _clients[idx].flush();
 #endif
-  while (_clients[idx].available()) {
-    _clients[idx].read();
-  }
 }
 
 template<uint8_t MAX_CLIENTS>

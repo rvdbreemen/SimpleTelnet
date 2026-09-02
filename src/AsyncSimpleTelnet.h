@@ -367,6 +367,16 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_onClientDisconnect(uint8_t idx) {
 template<uint8_t MAX_CLIENTS>
 void AsyncSimpleTelnet<MAX_CLIENTS>::_releaseSlot(uint8_t idx, bool triggerEvent) {
   if (!this->_clientActive[idx]) return;
+
+  // Give bytes that write() already reported as accepted one bounded chance to
+  // leave before _tx is cleared below. _tx is our own ring, ahead of lwIP, so
+  // clearing it first destroys data the caller was told had been taken. On an
+  // event-driven disconnect the socket is already gone and this no-ops; on an
+  // explicit stop(), such as the heap-recovery path, the peer is healthy and
+  // the payload survives. Must run before _clientPtr is cleared: _flushTx()
+  // reads it and returns early on null.
+  _flushTx(idx);
+
   AsyncClient* c = _clientPtr[idx];
   _clientPtr[idx] = nullptr;
 
