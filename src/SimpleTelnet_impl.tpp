@@ -15,6 +15,9 @@
  *   - No dynamic allocation in normal operation
  *   - No project-specific headers — Arduino.h + platform WiFi header only
  *   - ESP8266 and ESP32 differences isolated behind #ifdef guards
+ *
+ * Copyright (c) 2026 Robert van den Breemen
+ * GNU GPLv3 -- see LICENSE
  */
 
 // -------------------------------------------------------------------------
