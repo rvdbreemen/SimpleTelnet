@@ -105,7 +105,7 @@ If you don't need multi-client or if you don't need callbacks, go use those libr
 **Platform & packaging**
 - ESP8266 (sync) and ESP32 (sync + async).
 - One library; **AsyncTCP is an optional dependency** (only pulled in when you include the async header).
-- Arduino Library Manager + PlatformIO metadata; MIT licensed.
+- Arduino Library Manager + PlatformIO metadata; GNU GPLv3 licensed.
 
 ## Concepts
 

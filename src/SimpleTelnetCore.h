@@ -20,7 +20,7 @@
  * fork vendors a copy of this exact file — keep the two in sync.
  *
  * Copyright (c) 2026 Robert van den Breemen
- * MIT License — see LICENSE
+ * GNU GPLv3 -- see LICENSE
  */
 
 #pragma once
