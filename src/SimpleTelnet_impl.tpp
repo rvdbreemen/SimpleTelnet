@@ -558,18 +558,29 @@ void SimpleTelnet<MAX_CLIENTS>::_handleCharInput(char c) {
 // -------------------------------------------------------------------------
 template<uint8_t MAX_CLIENTS>
 void SimpleTelnet<MAX_CLIENTS>::_drainClient(uint8_t idx) {
-  // Flush outgoing data, then discard any incoming bytes (telnet negotiation).
-  // Deliberately no delay() — we are in a cooperative scheduler.
+  // Flush OUTGOING data only. Deliberately no delay(), we are in a
+  // cooperative scheduler.
+  //
+  // This used to also read and throw away every pending inbound byte, with the
+  // comment "discard any incoming bytes (telnet negotiation)". The loop was
+  // unconditional, so it could not tell an IAC sequence from payload. It runs
+  // at accept and again at teardown, so a client that pipelines a command with
+  // connect() lost that command, and a client that wrote and then closed lost
+  // its last one.
+  //
+  // Streaming consumers (_onInput == nullptr, for example a raw serial bridge)
+  // are the reason this matters: _processInput() never runs for them, so the
+  // discard loop was the only thing touching their bytes and could only
+  // destroy user data. Callback consumers are unaffected because unhandled
+  // bytes are already ignored downstream.
+  //
   // Reference: ESPTelnetBase.cpp emptyClientStream() had delay(50); we don't.
 #if defined(ARDUINO_ARCH_ESP8266)
-  // ESP8266: flush(timeout_ms) returns bool — ignore result during drain.
+  // ESP8266: flush(timeout_ms) returns bool, ignore result during drain.
   _clients[idx].flush(_keepAliveInterval);
 #else
   _clients[idx].flush();
 #endif
-  while (_clients[idx].available()) {
-    _clients[idx].read();
-  }
 }
 
 template<uint8_t MAX_CLIENTS>

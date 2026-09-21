@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `_drainClient()` no longer discards pending inbound bytes. The loop ran at
+  accept and at teardown and could not tell a telnet IAC sequence from payload,
+  so a client that pipelined a command with `connect()` lost that command and a
+  client that wrote then closed lost its last one. It now flushes outbound only.
+  Streaming consumers (`_onInput == nullptr`) were the ones losing data, because
+  `_processInput()` never runs for them. Backport of upstream `a909731` onto the
+  1.x maintenance line.
+
 ## [1.0.0] - 2026-04-12
 
 ### Added
