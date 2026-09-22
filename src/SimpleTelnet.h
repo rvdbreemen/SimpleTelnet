@@ -379,7 +379,9 @@ class SimpleTelnet : public Stream {
  private:
   // Write every byte to one slot, retrying a short write under budget.
   // Returns the count actually accepted; the shortfall is counted, not hidden.
-  size_t _writeToClient(uint8_t idx, const uint8_t* buf, size_t size);
+  // mayYield is true only for the OUTERMOST write(). A nested call must not
+  // yield, so it is passed false and takes a single best-effort attempt.
+  size_t _writeToClient(uint8_t idx, const uint8_t* buf, size_t size, bool mayYield);
 
   // -----------------------------------------------------------------------
   // Internal state

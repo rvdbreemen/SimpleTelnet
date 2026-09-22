@@ -205,7 +205,7 @@ void SimpleTelnet<MAX_CLIENTS>::onInputReceived(SimpleTelnetCallback f) {
 // busy console silently truncates. Retry under budget, then report honestly
 // and count whatever still did not fit.
 template<uint8_t MAX_CLIENTS>
-size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf, size_t size) {
+size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf, size_t size, bool mayYield) {
   size_t   sent     = 0;
   uint8_t  attempts = 0;
   const uint32_t started = millis();
@@ -222,7 +222,10 @@ size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf
     // is re-entrant through feedWatchDog()/yield(), and re-entering here would
     // interleave two lines into one corrupted stream. A nested caller therefore
     // takes what fits and reports the shortfall.
-    if (_inWrite) break;
+    //
+    // Test this against _inWrite and the retry is dead on arrival: the outer
+    // write() sets that flag before calling in, so it is always true here.
+    if (!mayYield) break;
     if (++attempts > SIMPLETELNET_WRITE_RETRIES) break;
     if ((uint32_t)(millis() - started) >= SIMPLETELNET_WRITE_BUDGET_MS) break;
     yield();
@@ -255,7 +258,7 @@ size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
   size_t best = 0;
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!_clientActive[i]) continue;
-    const size_t sent = _writeToClient(i, buf, size);
+    const size_t sent = _writeToClient(i, buf, size, outer);
     if (sent > best) best = sent;
   }
 
