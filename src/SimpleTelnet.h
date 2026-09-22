@@ -57,6 +57,18 @@
 // commonly 80-150 bytes and were triggering the fallback on every call.
 // Users can override this with a #define before the #include if RAM is
 // severely constrained; the buffer lives on the stack only during the call.
+// Bounded retry of a short write (TASK-1148). A partial write is normal on
+// ESP8266 once the lwIP send buffer fills; only a yield lets it drain, so the
+// retry alternates write and yield under BOTH a step and a wall-clock budget.
+// Keep this small: Serial is reserved for the PIC on that platform, so a long
+// stall here costs OpenTherm frames.
+#ifndef SIMPLETELNET_WRITE_RETRIES
+  #define SIMPLETELNET_WRITE_RETRIES   4
+#endif
+#ifndef SIMPLETELNET_WRITE_BUDGET_MS
+  #define SIMPLETELNET_WRITE_BUDGET_MS 2
+#endif
+
 #ifndef SIMPLETELNET_PRINTF_STACK_LEN
   #define SIMPLETELNET_PRINTF_STACK_LEN 256
 #endif
@@ -280,6 +292,23 @@ class SimpleTelnet : public Stream {
    * @param val Byte to send.
    * @return 1 if at least one client received it, 0 if all failed or none connected.
    */
+  /**
+   * @brief Bytes this instance could not hand to the TCP stack, per slot.
+   *
+   * write() drops what does not fit after the retry budget. Without this
+   * counter that loss is invisible, which is the whole defect: a caller
+   * cannot tell a quiet console from a truncated one.
+   */
+  uint32_t txDropped(uint8_t idx = 0) const {
+    return (idx < MAX_CLIENTS) ? _txDropped[idx] : 0;
+  }
+  /** @brief Summed dropped bytes across every slot. */
+  uint32_t txDroppedTotal() const {
+    uint32_t t = 0;
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) t += _txDropped[i];
+    return t;
+  }
+
   virtual size_t write(uint8_t val) override;
 
   /**
@@ -348,6 +377,10 @@ class SimpleTelnet : public Stream {
 #endif
 
  private:
+  // Write every byte to one slot, retrying a short write under budget.
+  // Returns the count actually accepted; the shortfall is counted, not hidden.
+  size_t _writeToClient(uint8_t idx, const uint8_t* buf, size_t size);
+
   // -----------------------------------------------------------------------
   // Internal state
   // -----------------------------------------------------------------------
@@ -358,6 +391,8 @@ class SimpleTelnet : public Stream {
   char        _ip[MAX_CLIENTS][SIMPLETELNET_IP_LEN]; // IP per slot
   char        _attemptIp[SIMPLETELNET_IP_LEN];  // last rejected IP
   uint8_t     _writeErrors[MAX_CLIENTS];        // consecutive write failures
+  uint32_t    _txDropped[MAX_CLIENTS];          // bytes the TCP stack never took
+  bool        _inWrite;                         // re-entrancy guard for the retry yield
 
   uint8_t     _connectedCount;
   uint16_t    _port;

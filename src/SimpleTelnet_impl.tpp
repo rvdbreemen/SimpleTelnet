@@ -38,6 +38,8 @@ SimpleTelnet<MAX_CLIENTS>::SimpleTelnet(uint16_t port)
   memset(_ip, 0, sizeof(_ip));
   memset(_attemptIp, 0, sizeof(_attemptIp));
   memset(_writeErrors, 0, sizeof(_writeErrors));
+  memset(_txDropped, 0, sizeof(_txDropped));
+  _inWrite = false;
   memset(_inputBuf, 0, sizeof(_inputBuf));
 }
 
@@ -196,46 +198,69 @@ void SimpleTelnet<MAX_CLIENTS>::onInputReceived(SimpleTelnetCallback f) {
 // -------------------------------------------------------------------------
 // Stream — write (broadcast to all active clients)
 // -------------------------------------------------------------------------
+// A short write is the normal result on ESP8266 once the lwIP send buffer fills
+// (core 2.7.4, ClientContext.h::_write_from_source returns _written after a
+// timeout). It used to be treated as success while the unwritten tail was
+// discarded and the caller was told the full count went out, which is how a
+// busy console silently truncates. Retry under budget, then report honestly
+// and count whatever still did not fit.
+template<uint8_t MAX_CLIENTS>
+size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf, size_t size) {
+  size_t   sent     = 0;
+  uint8_t  attempts = 0;
+  const uint32_t started = millis();
+
+  while (sent < size) {
+    const size_t n = _clients[idx].write(buf + sent, size - sent);
+    if (n > 0) {
+      sent += n;
+      _writeErrors[idx] = 0;
+      if (sent >= size) break;
+    }
+    // Nothing more fits right now. Only a yield lets lwIP drain, so retrying
+    // without one would spin. A nested call must NOT yield: doBackgroundTasks()
+    // is re-entrant through feedWatchDog()/yield(), and re-entering here would
+    // interleave two lines into one corrupted stream. A nested caller therefore
+    // takes what fits and reports the shortfall.
+    if (_inWrite) break;
+    if (++attempts > SIMPLETELNET_WRITE_RETRIES) break;
+    if ((uint32_t)(millis() - started) >= SIMPLETELNET_WRITE_BUDGET_MS) break;
+    yield();
+  }
+
+  if (sent == 0) {
+    // Not one byte accepted after the whole budget: the reliable dead-connection
+    // signal the error counter exists for.
+    _onWriteError(idx);
+  }
+  if (sent < size) _txDropped[idx] += (uint32_t)(size - sent);
+  return sent;
+}
+
 template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::write(uint8_t val) {
-  if (_connectedCount == 0) return 0;
-  bool anyOk = false;
-  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
-    if (!_clientActive[i]) continue;
-    if (_clients[i].write(val) == 0) {
-      _onWriteError(i);
-    } else {
-      _writeErrors[i] = 0;
-      anyOk = true;
-    }
-  }
-  // Return 1 if at least one client received it, 0 if all failed.
-  // Stream contract: return bytes written to "the stream", not client count.
-  return anyOk ? 1 : 0;
+  return write(&val, 1);
 }
 
 template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
-  if (_connectedCount == 0) return 0;
-  bool anyOk = false;
+  if (_connectedCount == 0 || buf == nullptr || size == 0) return 0;
+
+  const bool outer = !_inWrite;
+  if (outer) _inWrite = true;
+
+  // Broadcast: report the most any single client accepted. Returning the
+  // minimum would let one stalled client mask delivery to the others, and the
+  // Stream contract describes the stream, not the slowest subscriber.
+  size_t best = 0;
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!_clientActive[i]) continue;
-    size_t n = _clients[i].write(buf, size);
-    if (n == 0) {
-      // Total write failure: the TCP stack couldn't accept even one byte.
-      // This is the reliable signal of a dead connection.
-      _onWriteError(i);
-    } else {
-      // Partial success (n < size) is normal when the TCP send buffer is
-      // temporarily full.  Clear error counter and let the data already
-      // delivered count as a heartbeat.  The keep-alive check detects dead
-      // connections via status() independently of write success.
-      _writeErrors[i] = 0;
-      anyOk = true;
-    }
+    const size_t sent = _writeToClient(i, buf, size);
+    if (sent > best) best = sent;
   }
-  // Return size if at least one client accepted at least one byte.
-  return anyOk ? size : 0;
+
+  if (outer) _inWrite = false;
+  return best;
 }
 
 // -------------------------------------------------------------------------
