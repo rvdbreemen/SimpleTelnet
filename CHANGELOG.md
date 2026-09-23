@@ -11,13 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `write()` no longer discards the tail of a short write while reporting the
   full count. On ESP8266 a partial write is the normal result once the lwIP
   send buffer fills, and the unwritten remainder was dropped silently, so a
-  caller could not tell a quiet console from a truncated one. It now retries
-  the remainder under a bounded budget (`SIMPLETELNET_WRITE_RETRIES`,
-  `SIMPLETELNET_WRITE_BUDGET_MS`), returns the count actually accepted, and
-  counts the shortfall per client, readable via `txDropped()`/`txDroppedTotal()`.
-  Only a yield lets lwIP drain, so the retry yields between attempts; a nested
-  call does not yield, because re-entering write() for the same client would
-  interleave two lines into one corrupted stream.
+  caller could not tell a quiet console from a truncated one. It now returns
+  the count actually accepted and counts the shortfall per client, readable
+  via `txDropped()`/`txDroppedTotal()`.
+
+  There is deliberately no retry. The underlying write already blocks while
+  the peer keeps making progress and only returns short after the client's
+  timeout passes with none (1000 ms, `setTimeout(_keepAliveInterval)`), so a
+  retry after that point either waits another full timeout on a socket that
+  just proved it is not draining, or, bounded tighter, never runs. A bounded
+  retry was added and then removed for exactly that reason: it was inert.
 - `_drainClient()` no longer discards pending inbound bytes. The loop ran at
   accept and at teardown and could not tell a telnet IAC sequence from payload,
   so a client that pipelined a command with `connect()` lost that command and a

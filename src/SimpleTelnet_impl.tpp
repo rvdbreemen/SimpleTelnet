@@ -39,7 +39,6 @@ SimpleTelnet<MAX_CLIENTS>::SimpleTelnet(uint16_t port)
   memset(_attemptIp, 0, sizeof(_attemptIp));
   memset(_writeErrors, 0, sizeof(_writeErrors));
   memset(_txDropped, 0, sizeof(_txDropped));
-  _inWrite = false;
   memset(_inputBuf, 0, sizeof(_inputBuf));
 }
 
@@ -198,43 +197,27 @@ void SimpleTelnet<MAX_CLIENTS>::onInputReceived(SimpleTelnetCallback f) {
 // -------------------------------------------------------------------------
 // Stream — write (broadcast to all active clients)
 // -------------------------------------------------------------------------
-// A short write is the normal result on ESP8266 once the lwIP send buffer fills
-// (core 2.7.4, ClientContext.h::_write_from_source returns _written after a
-// timeout). It used to be treated as success while the unwritten tail was
-// discarded and the caller was told the full count went out, which is how a
-// busy console silently truncates. Retry under budget, then report honestly
-// and count whatever still did not fit.
+// A short write is the normal result on ESP8266 once the lwIP send buffer fills.
+// It used to be treated as success while the unwritten tail was discarded and the
+// caller was told the full count went out, which is how a busy console silently
+// truncates. Report the count the TCP stack actually took, and count the rest.
+//
+// There is deliberately no retry. ClientContext::_write_from_source already blocks
+// while the peer keeps making progress and only returns short after _timeout_ms
+// with none, and this class sets that to _keepAliveInterval (1000 ms by default,
+// see _connectClient). A retry after that point either waits another full timeout
+// on a socket that has just proven it is not draining, or, bounded any tighter,
+// never gets to run. An earlier version shipped exactly such a bounded retry and
+// it was inert for that reason.
 template<uint8_t MAX_CLIENTS>
-size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf, size_t size, bool mayYield) {
-  size_t   sent     = 0;
-  uint8_t  attempts = 0;
-  const uint32_t started = millis();
-
-  while (sent < size) {
-    const size_t n = _clients[idx].write(buf + sent, size - sent);
-    if (n > 0) {
-      sent += n;
-      _writeErrors[idx] = 0;
-      if (sent >= size) break;
-    }
-    // Nothing more fits right now. Only a yield lets lwIP drain, so retrying
-    // without one would spin. A nested call must NOT yield: doBackgroundTasks()
-    // is re-entrant through feedWatchDog()/yield(), and re-entering here would
-    // interleave two lines into one corrupted stream. A nested caller therefore
-    // takes what fits and reports the shortfall.
-    //
-    // Test this against _inWrite and the retry is dead on arrival: the outer
-    // write() sets that flag before calling in, so it is always true here.
-    if (!mayYield) break;
-    if (++attempts > SIMPLETELNET_WRITE_RETRIES) break;
-    if ((uint32_t)(millis() - started) >= SIMPLETELNET_WRITE_BUDGET_MS) break;
-    yield();
-  }
-
+size_t SimpleTelnet<MAX_CLIENTS>::_writeToClient(uint8_t idx, const uint8_t* buf, size_t size) {
+  const size_t sent = _clients[idx].write(buf, size);
   if (sent == 0) {
-    // Not one byte accepted after the whole budget: the reliable dead-connection
+    // Not one byte accepted within the whole timeout: the reliable dead-connection
     // signal the error counter exists for.
     _onWriteError(idx);
+  } else {
+    _writeErrors[idx] = 0;
   }
   if (sent < size) _txDropped[idx] += (uint32_t)(size - sent);
   return sent;
@@ -249,20 +232,15 @@ template<uint8_t MAX_CLIENTS>
 size_t SimpleTelnet<MAX_CLIENTS>::write(const uint8_t* buf, size_t size) {
   if (_connectedCount == 0 || buf == nullptr || size == 0) return 0;
 
-  const bool outer = !_inWrite;
-  if (outer) _inWrite = true;
-
-  // Broadcast: report the most any single client accepted. Returning the
-  // minimum would let one stalled client mask delivery to the others, and the
-  // Stream contract describes the stream, not the slowest subscriber.
+  // Broadcast: report the most any single client accepted. Returning the minimum
+  // would let one stalled client mask delivery to the others, and the Stream
+  // contract describes the stream, not the slowest subscriber.
   size_t best = 0;
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (!_clientActive[i]) continue;
-    const size_t sent = _writeToClient(i, buf, size, outer);
+    const size_t sent = _writeToClient(i, buf, size);
     if (sent > best) best = sent;
   }
-
-  if (outer) _inWrite = false;
   return best;
 }
 

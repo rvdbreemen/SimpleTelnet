@@ -57,18 +57,6 @@
 // commonly 80-150 bytes and were triggering the fallback on every call.
 // Users can override this with a #define before the #include if RAM is
 // severely constrained; the buffer lives on the stack only during the call.
-// Bounded retry of a short write (TASK-1148). A partial write is normal on
-// ESP8266 once the lwIP send buffer fills; only a yield lets it drain, so the
-// retry alternates write and yield under BOTH a step and a wall-clock budget.
-// Keep this small: Serial is reserved for the PIC on that platform, so a long
-// stall here costs OpenTherm frames.
-#ifndef SIMPLETELNET_WRITE_RETRIES
-  #define SIMPLETELNET_WRITE_RETRIES   4
-#endif
-#ifndef SIMPLETELNET_WRITE_BUDGET_MS
-  #define SIMPLETELNET_WRITE_BUDGET_MS 2
-#endif
-
 #ifndef SIMPLETELNET_PRINTF_STACK_LEN
   #define SIMPLETELNET_PRINTF_STACK_LEN 256
 #endif
@@ -377,11 +365,9 @@ class SimpleTelnet : public Stream {
 #endif
 
  private:
-  // Write every byte to one slot, retrying a short write under budget.
-  // Returns the count actually accepted; the shortfall is counted, not hidden.
-  // mayYield is true only for the OUTERMOST write(). A nested call must not
-  // yield, so it is passed false and takes a single best-effort attempt.
-  size_t _writeToClient(uint8_t idx, const uint8_t* buf, size_t size, bool mayYield);
+  // Write to one slot and report the count actually accepted; the shortfall is
+  // counted, not hidden. No retry, see the definition for why.
+  size_t _writeToClient(uint8_t idx, const uint8_t* buf, size_t size);
 
   // -----------------------------------------------------------------------
   // Internal state
@@ -394,7 +380,6 @@ class SimpleTelnet : public Stream {
   char        _attemptIp[SIMPLETELNET_IP_LEN];  // last rejected IP
   uint8_t     _writeErrors[MAX_CLIENTS];        // consecutive write failures
   uint32_t    _txDropped[MAX_CLIENTS];          // bytes the TCP stack never took
-  bool        _inWrite;                         // re-entrancy guard for the retry yield
 
   uint8_t     _connectedCount;
   uint16_t    _port;
