@@ -328,6 +328,31 @@ class SimpleTelnet : public Stream {
   virtual int peek() override;
 
   /**
+   * @brief Bytes waiting from one specific client slot.
+   *
+   * available()/read() serve whichever slot has data, so with several writers
+   * the caller cannot tell whose byte it got. Reading per slot lets the caller
+   * decide which client may write at a given moment and leave the others'
+   * bytes untouched in their own TCP buffer.
+   * @param idx Slot index.
+   * @return Byte count, or 0 if the slot is inactive or has no data.
+   */
+  int availableFrom(uint8_t idx);
+
+  /**
+   * @brief Read one byte from one specific client slot.
+   * @param idx Slot index.
+   * @return Byte value (0..255), or -1 if the slot is inactive or has no data.
+   */
+  int readFrom(uint8_t idx);
+
+  /**
+   * @brief Whether a client occupies this slot.
+   * @param idx Slot index.
+   */
+  bool isSlotActive(uint8_t idx) const;
+
+  /**
    * @brief Flush all connected clients.
    * @note ESP8266: calls client.flush(keepAliveInterval_ms) — returns bool,
    *       failure counts as a write error and may evict the client.

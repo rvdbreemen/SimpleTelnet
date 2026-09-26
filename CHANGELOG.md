@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `availableFrom(idx)`, `readFrom(idx)` and `isSlotActive(idx)`: read one
+  specific client slot. `available()`/`read()` serve whichever slot has data,
+  so with several writers the caller cannot tell whose byte it got. Reading
+  per slot lets a bidirectional bridge let one client write at a time while
+  the others' bytes wait untouched in their own TCP buffer.
+
+### Changed
+- A reconnect from the address of a current occupant now takes over that
+  slot for any `MAX_CLIENTS`, not only for one slot. It still applies only when
+  every slot is taken, so two clients from one address each keep a slot.
+
 ### Fixed
 - `write()` no longer discards the tail of a short write while reporting the
   full count. On ESP8266 a partial write is the normal result once the lwIP

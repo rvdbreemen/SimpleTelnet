@@ -278,6 +278,26 @@ int SimpleTelnet<MAX_CLIENTS>::peek() {
   return -1;
 }
 
+// -------------------------------------------------------------------------
+// Stream — read from one specific slot
+// -------------------------------------------------------------------------
+template<uint8_t MAX_CLIENTS>
+int SimpleTelnet<MAX_CLIENTS>::availableFrom(uint8_t idx) {
+  if (idx >= MAX_CLIENTS || !_clientActive[idx]) return 0;
+  return _clients[idx].available();
+}
+
+template<uint8_t MAX_CLIENTS>
+int SimpleTelnet<MAX_CLIENTS>::readFrom(uint8_t idx) {
+  if (idx >= MAX_CLIENTS || !_clientActive[idx]) return -1;
+  return _clients[idx].read();
+}
+
+template<uint8_t MAX_CLIENTS>
+bool SimpleTelnet<MAX_CLIENTS>::isSlotActive(uint8_t idx) const {
+  return idx < MAX_CLIENTS && _clientActive[idx];
+}
+
 template<uint8_t MAX_CLIENTS>
 void SimpleTelnet<MAX_CLIENTS>::flush() {
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
@@ -399,15 +419,18 @@ void SimpleTelnet<MAX_CLIENTS>::_acceptNewClients() {
   _extractIP(newClient.remoteIP(), _attemptIp, sizeof(_attemptIp));
   if (_onConnectionAttempt) _onConnectionAttempt(_attemptIp);
 
-  // Reconnect check: MAX_CLIENTS==1 AND same IP as current occupant.
-  // The connecting side likely tore down an old connection and reconnected;
-  // silently rotate the slot rather than refusing them.
-  if (MAX_CLIENTS == 1 && _clientActive[0] &&
-      strncmp(_attemptIp, _ip[0], SIMPLETELNET_IP_LEN) == 0) {
-    _disconnectClient(0, false);       // evict old, no disconnect event
-    _connectClient(0, newClient);      // accept new
-    if (_onReconnect) _onReconnect(_ip[0]);
-    return;
+  // Reconnect check: same IP as a current occupant. The connecting side most
+  // likely tore down an old connection and reconnected, and the old slot may
+  // not have been detected as dead yet; rotate that slot rather than refusing
+  // them. Applies to every slot, so a crashed client can reclaim its place
+  // even when another client holds the other slot.
+  for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+    if (_clientActive[i] && strncmp(_attemptIp, _ip[i], SIMPLETELNET_IP_LEN) == 0) {
+      _disconnectClient(i, false);     // evict old, no disconnect event
+      _connectClient(i, newClient);    // accept new
+      if (_onReconnect) _onReconnect(_ip[i]);
+      return;
+    }
   }
 
   newClient.stop();
