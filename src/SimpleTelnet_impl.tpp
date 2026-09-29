@@ -424,13 +424,30 @@ void SimpleTelnet<MAX_CLIENTS>::_acceptNewClients() {
   // not have been detected as dead yet; rotate that slot rather than refusing
   // them. Applies to every slot, so a crashed client can reclaim its place
   // even when another client holds the other slot.
+  //
+  // Several slots can carry the same address (two tools on one host). Evict the
+  // one with the most unacknowledged outbound data, i.e. the least send-buffer
+  // room: a live peer ACKs within milliseconds, a hung or vanished one leaves
+  // bytes queued. Taking the first match instead evicted the other, healthy
+  // tool, and the two then kept evicting each other while the stale socket
+  // stayed (measured on a bench gateway: over 50 s of churn). On a tie, for
+  // example two live clients or no traffic yet, the first match is kept.
+  int victim = -1;
+  int victimRoom = 0;
   for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
     if (_clientActive[i] && strncmp(_attemptIp, _ip[i], SIMPLETELNET_IP_LEN) == 0) {
-      _disconnectClient(i, false);     // evict old, no disconnect event
-      _connectClient(i, newClient);    // accept new
-      if (_onReconnect) _onReconnect(_ip[i]);
-      return;
+      const int room = _clients[i].availableForWrite();
+      if (victim < 0 || room < victimRoom) {
+        victim = i;
+        victimRoom = room;
+      }
     }
+  }
+  if (victim >= 0) {
+    _disconnectClient((uint8_t)victim, false);     // evict old, no disconnect event
+    _connectClient((uint8_t)victim, newClient);    // accept new
+    if (_onReconnect) _onReconnect(_ip[victim]);
+    return;
   }
 
   newClient.stop();
