@@ -129,6 +129,21 @@ class AsyncSimpleTelnet : public SimpleTelnetCore<MAX_CLIENTS> {
   /** @brief No-op in async mode (events are pushed). Kept for drop-in use. */
   void loop() {}
 
+  /** @brief TCP_NODELAY for new connections (default true: every write leaves at
+   *  once). Pass false for a log/debug console: Nagle then lets the TCP stack
+   *  merge the many small fragments of a log line into one segment while an ACK
+   *  is outstanding, instead of holding one heap pbuf and one WiFi TX buffer per
+   *  fragment. Keep true for request/response protocols where latency matters.
+   *  Call before begin(); it also applies to clients that are already connected. */
+  void setNoDelay(bool noDelay) {
+    _noDelay = noDelay;
+    _lock();
+    for (uint8_t i = 0; i < MAX_CLIENTS; i++) {
+      if (this->_clientActive[i] && _clientPtr[i]) _clientPtr[i]->setNoDelay(noDelay);
+    }
+    _unlock();
+  }
+
   // Connection actions ------------------------------------------------------
   void disconnectClient();
   void disconnectClient(uint8_t index, bool triggerEvent = true);
@@ -152,6 +167,7 @@ class AsyncSimpleTelnet : public SimpleTelnetCore<MAX_CLIENTS> {
   SimpleTelnetRing<SIMPLETELNET_RX_BUF_LEN> _rx[MAX_CLIENTS];
   SimpleTelnetRing<SIMPLETELNET_TX_BUF_LEN> _tx[MAX_CLIENTS];
   SemaphoreHandle_t _mutex;
+  bool         _noDelay = true;
 
   // AsyncTCP callbacks run on the AsyncTCP task; write()/printf() run on the
   // caller task. A recursive mutex guards the shared slot/ring state and lets
@@ -204,7 +220,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_installServerHandler() {
   _server.onClient([](void* arg, AsyncClient* c) {
     static_cast<AsyncSimpleTelnet*>(arg)->_handleNewClient(c);
   }, this);
-  _server.setNoDelay(true);
+  _server.setNoDelay(_noDelay);
 }
 
 template<uint8_t MAX_CLIENTS>
@@ -302,7 +318,7 @@ void AsyncSimpleTelnet<MAX_CLIENTS>::_attachClient(uint8_t idx, AsyncClient* c) 
   this->_connectedCount++;
   this->_resetNegotiation(idx);   // fresh IAC parser state before data arrives
 
-  c->setNoDelay(true);
+  c->setNoDelay(_noDelay);   // see setNoDelay()
   // BUGFIX (TASK-879): do NOT map the keep-alive interval onto the AsyncTCP RX
   // timeout. setRxTimeout(N) closes the socket when NO DATA is RECEIVED from the
   // peer for N seconds — but a telnet/debug console is almost entirely OUTBOUND
